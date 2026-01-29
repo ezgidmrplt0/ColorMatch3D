@@ -48,10 +48,13 @@ public class PatternGenerator : MonoBehaviour
 
     // Runtime state
     private Dictionary<Color, List<GameObject>> activePixelCubes = new Dictionary<Color, List<GameObject>>();
+    private List<PlayerCube> activeDeckButtons = new List<PlayerCube>(); // Track deck buttons for re-ordering
     private bool isGameActive = false;
 
     private void Start()
     {
+        SetupHypercasualVisuals();
+
         if (cubePrefab == null) { Debug.LogError("Cube Prefab is not assigned!"); return; }
         
         // Clean up manual slots at start - Preserve Visuals!
@@ -188,6 +191,7 @@ public class PatternGenerator : MonoBehaviour
 
         PlayerCube[] oldButtons = deckCenterPoint.GetComponentsInChildren<PlayerCube>();
         foreach (var btn in oldButtons) Destroy(btn.gameObject);
+        activeDeckButtons.Clear(); 
 
         int count = stacks.Count;
         if (count == 0) return;
@@ -252,6 +256,60 @@ public class PatternGenerator : MonoBehaviour
             pc.Initialize(stack.color, this);
             pc.stackCount = stack.count; 
             
+            Text stackText = playerDeckCube.GetComponentInChildren<Text>();
+            if (stackText != null) stackText.text = stack.count.ToString(); 
+            
+            activeDeckButtons.Add(pc); // Add to tracking list
+
+            col++;
+        }
+    }
+
+    // New method to rearrange deck buttons
+    private void RearrangeDeck()
+    {
+        if (deckCenterPoint == null || activeDeckButtons.Count == 0) return;
+
+        float buttonSize = 0.6f; 
+        float itemSpacing = buttonSize * 1.5f; 
+ 
+        Vector3 rightDir = deckCenterPoint.right;
+        Vector3 upDir = deckCenterPoint.up; 
+        Vector3 forwardDir = deckCenterPoint.forward;
+
+        Vector3 deckOrigin = deckCenterPoint.position 
+                           + (rightDir * deckPositionOffset.x) 
+                           + (upDir * deckPositionOffset.y) 
+                           + (forwardDir * deckPositionOffset.z);
+
+        Vector3 startPos = deckOrigin 
+                         - (rightDir * (maxDeckWidth * 0.5f - buttonSize * 0.5f)) 
+                         + (upDir * (maxDeckHeight * 0.5f - buttonSize * 0.5f));
+
+        int col = 0;
+        int row = 0;
+
+        for (int i = 0; i < activeDeckButtons.Count; i++)
+        {
+            PlayerCube btn = activeDeckButtons[i];
+            if (btn == null) continue;
+
+            float xDist = col * itemSpacing;
+            float yDist = row * itemSpacing;
+
+            if (xDist + buttonSize > maxDeckWidth + 0.1f) 
+            {
+                col = 0;
+                row++;
+                xDist = 0;
+                yDist = row * itemSpacing;
+            }
+
+            Vector3 targetPos = startPos + (rightDir * xDist) - (upDir * yDist);
+            
+            // Move smoothly to new position
+            btn.transform.DOMove(targetPos, 0.3f).SetEase(Ease.OutQuad);
+            
             col++;
         }
     }
@@ -313,15 +371,16 @@ public class PatternGenerator : MonoBehaviour
                 
                 if (targetSlotIndex == -1) { Debug.Log("Slots Full!"); return; } // Slots full
 
-                senderCube.stackCount--; // Decrement Deck Ammo
-                
+                // Spawn Drone
                 droneObj = Instantiate(cubePrefab, senderCube.transform.position, Quaternion.identity);
                 isNewSpawn = true;
                 
-                // ... (rest is same)
-
-                // Assign target slot info
-                // We will use the index later.
+                // USER REQUEST: Destroy the deck button immediately so it cannot be clicked again
+                if (activeDeckButtons.Contains(senderCube)) activeDeckButtons.Remove(senderCube);
+                Destroy(senderCube.gameObject);
+                
+                // Rearrange remaining buttons
+                RearrangeDeck();
             }
 
             // Setup Drone
@@ -372,8 +431,16 @@ public class PatternGenerator : MonoBehaviour
             
             if(destSlot == null) { if(isNewSpawn) Destroy(droneObj); return; } // Should not happen easily
 
+            // KILL any existing tweens on this object to prevent conflicts
+            DOTween.Kill(droneObj);
+            droneObj.transform.DOKill(); // Ensure transform tweens are also killed
+
             // Unparent while flying
             droneObj.transform.SetParent(null); 
+            
+            // FIX: Reset Scale AFTER unparenting to ensure correct World Scale
+            droneObj.transform.localScale = Vector3.one * 0.8f;
+            droneObj.transform.localRotation = Quaternion.identity; 
             
             // Re-Parent a dummy/placeholder to reserve the slot? 
             // Better yet, just trust that no one else takes it because we are single-threaded here mostly.
@@ -697,6 +764,39 @@ public class PatternGenerator : MonoBehaviour
     }
 
 
+
+    private void SetupHypercasualVisuals()
+    {
+        // 1. Camera Background (Soft Light Blue/White)
+        if(Camera.main != null)
+        {
+            Camera.main.clearFlags = CameraClearFlags.SolidColor;
+            Camera.main.backgroundColor = new Color32(235, 245, 255, 255); // Very soft blue-white
+        }
+
+        // 2. Lighting (Warm Sun)
+        Light mainLight = FindObjectOfType<Light>();
+        if(mainLight != null && mainLight.type == LightType.Directional)
+        {
+            mainLight.color = new Color32(255, 250, 240, 255); // Warm white
+            mainLight.intensity = 1.1f;
+            mainLight.transform.rotation = Quaternion.Euler(50, -30, 0);
+            mainLight.shadowStrength = 0.4f; // Softer shadows
+            mainLight.shadows = LightShadows.Soft;
+        }
+        
+        // 3. Ambient Lighting (Trilight for contrast)
+        RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
+        RenderSettings.ambientSkyColor = new Color32(255, 255, 255, 255);
+        RenderSettings.ambientEquatorColor = new Color32(200, 220, 230, 255); // Blue-ish grey
+        RenderSettings.ambientGroundColor = new Color32(150, 150, 150, 255);
+
+        // 4. Fog (Depth)
+        RenderSettings.fog = true;
+        RenderSettings.fogMode = FogMode.ExponentialSquared;
+        RenderSettings.fogColor = new Color32(235, 245, 255, 255); // Match BG
+        RenderSettings.fogDensity = 0.015f;
+    }
 
     void CheckWinCondition()
     {
