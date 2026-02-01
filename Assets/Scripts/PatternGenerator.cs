@@ -515,6 +515,7 @@ public class PatternGenerator : MonoBehaviour
         }
     }
 
+
     IEnumerator DroneRapidFire(PlayerCube dronePC, Color color, Transform targetSlot)
     {
         bool isFlying = true;
@@ -541,13 +542,25 @@ public class PatternGenerator : MonoBehaviour
                      dronePC.stackCount--;
                      if(ammoText != null) ammoText.text = dronePC.stackCount.ToString();
 
+                     // RECOIL: Punch scale on firing
+                     drone.transform.DOPunchScale(Vector3.one * 0.2f, 0.1f, 5, 1);
+
                      // Shoot Projectile
                      GameObject projectile = Instantiate(cubePrefab, drone.transform.position, Quaternion.identity);
                      projectile.GetComponent<Renderer>().material.color = color;
                      projectile.transform.localScale = Vector3.one * 0.15f; 
 
-                     projectile.transform.DOMove(target.transform.position, 0.15f).SetEase(Ease.Linear).OnComplete(() => {
-                        if (target != null) { Destroy(target); }
+                     projectile.transform.DOMove(target.transform.position, 0.12f).SetEase(Ease.Linear).OnComplete(() => { // Faster bullet
+                        if (target != null) 
+                        { 
+                            // JUICE 1: Explosion Debris
+                            CreateExplosion(target.transform.position, color);
+                            Destroy(target); 
+                        }
+                        
+                        // JUICE 2: Screen Shake (Subtle)
+                        if(Camera.main != null) Camera.main.transform.DOShakePosition(0.05f, 0.05f, 5, 90, false, true);
+
                         Destroy(projectile);
                      });
                      
@@ -560,9 +573,6 @@ public class PatternGenerator : MonoBehaviour
                          drone.transform.DOScale(0, 0.1f).OnComplete(() => Destroy(drone));
                          
                          // Free the slot logic? For now simple destroy.
-                         // Need to update slotOccupied array? 
-                         // Just finding the index and freeing it is complex but let's assume auto-fix on next regeneration or simple Destroy.
-                         // To be robust:
                          int slotIdx = manualSlots.IndexOf(targetSlot);
                          if(slotIdx != -1) slotOccupied[slotIdx] = false;
 
@@ -570,9 +580,30 @@ public class PatternGenerator : MonoBehaviour
                      }
                  }
             }
-            yield return new WaitForSeconds(0.15f); 
+            yield return new WaitForSeconds(0.12f); // Faster fire rate
         }
     }
+
+    void CreateExplosion(Vector3 pos, Color color)
+    {
+        int debrisCount = 5;
+        for (int i = 0; i < debrisCount; i++)
+        {
+            GameObject debris = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            debris.transform.position = pos + Random.insideUnitSphere * 0.2f;
+            debris.transform.localScale = Vector3.one * Random.Range(0.1f, 0.2f);
+            debris.GetComponent<Renderer>().material.color = color;
+            
+            // Random explosion direction
+            Vector3 randomDir = Random.insideUnitSphere.normalized * Random.Range(0.5f, 1.5f);
+            
+            // Allow physics-like movement with Tween
+            debris.transform.DOMove(debris.transform.position + randomDir, 0.4f).SetEase(Ease.OutQuad);
+            debris.transform.DORotate(Random.insideUnitSphere * 360, 0.4f, RotateMode.FastBeyond360);
+            debris.transform.DOScale(0, 0.4f).OnComplete(()=> Destroy(debris));
+        }
+    }
+
 
 
 
