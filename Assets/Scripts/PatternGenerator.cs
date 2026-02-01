@@ -50,10 +50,16 @@ public class PatternGenerator : MonoBehaviour
     private Dictionary<Color, List<GameObject>> activePixelCubes = new Dictionary<Color, List<GameObject>>();
     private List<PlayerCube> activeDeckButtons = new List<PlayerCube>(); // Track deck buttons for re-ordering
     private bool isGameActive = false;
+    
+    // Level System
+    private int currentLevelIndex = 0;
+    private List<string[]> levelPatterns = new List<string[]>();
+
 
     private void Start()
     {
         SetupHypercasualVisuals();
+        InitializeLevels();
 
         if (cubePrefab == null) { Debug.LogError("Cube Prefab is not assigned!"); return; }
         
@@ -72,27 +78,56 @@ public class PatternGenerator : MonoBehaviour
             }
         }
         
-        GenerateManualPattern();
-        
-        Debug.Log($"Pattern Generated. Colors Logic: {activePixelCubes.Count}");
+        LoadLevel(currentLevelIndex);
     }
     
-    public void GenerateManualPattern()
+    private void InitializeLevels()
     {
-        // Cleanup existing patterns
-        foreach(var list in activePixelCubes.Values) { foreach(var obj in list) if(obj) Destroy(obj); }
-        activePixelCubes.Clear();
+        levelPatterns.Clear();
         
-        // Initialize occupied array based on manual slots count
-        if (manualSlots != null) 
-        {
-            maxSlots = manualSlots.Count;
-            slotOccupied = new bool[maxSlots];
-        }
+        // Level 1: HEART (Easy)
+        levelPatterns.Add(new string[] {
+            ".............",
+            "...R.....R...",
+            "..RRR...RRR..",
+            ".RRRRR.RRRRR.",
+            ".RRRRRRRRRRR.",
+            "..RRRRRRRRR..",
+            "...RRRRRRR...",
+            "....RRRRR....",
+            ".....RRR.....",
+            "......R......"
+        });
 
-        // DEFINING THE PATTERN MANUALLY (The Heart)
-        // FIXED: All rows must have EQUAL length
-        string[] rows = new string[] {
+        // Level 2: SMILEY (Yellow & Black)
+        levelPatterns.Add(new string[] {
+            ".............",
+            "...YYYYYYY...",
+            "..YKKYYYKKY..",
+            ".YYYYYYYYYYY.",
+            ".YKYKYKYKYKY.",
+            ".YYYYYYYYYYY.",
+            "..YKKKKKKKY..",
+            "...YYYYYYY...",
+            "............."
+        });
+        
+        // Level 3: SWORD (Blue & Gray/Black)
+        levelPatterns.Add(new string[] {
+            "......B......",
+            "......B......",
+            ".....BBB.....",
+            ".....B.B.....",
+            "....B...B....",
+            "....B...B....",
+            "....B...B....",
+            "...KKKKKKK...",
+            "......K......",
+            "......K......"
+        });
+
+        // Level 4: COMPLEX HEART (Original)
+        levelPatterns.Add(new string[] {
             ".............",
             "...KK...KK...",
             "..KRRK.KRRK..",
@@ -103,7 +138,52 @@ public class PatternGenerator : MonoBehaviour
             "....KRRRK....",
             ".....KRK.....",
             "......K......"
-        };
+        });
+    }
+
+    public void LoadLevel(int index)
+    {
+        if(index < 0 || index >= levelPatterns.Count) index = 0; // Loop back
+        currentLevelIndex = index;
+
+        GeneratePatternFromMap(levelPatterns[currentLevelIndex]);
+        
+        // Hide Manual UI
+        if(winUIObject != null) winUIObject.SetActive(false);
+        
+        Debug.Log($"Level {index + 1} Loaded!");
+    }
+
+
+    public void GeneratePatternFromMap(string[] rows)
+    {
+        // Cleanup existing patterns
+        foreach(var list in activePixelCubes.Values) { foreach(var obj in list) if(obj) Destroy(obj); }
+        activePixelCubes.Clear();
+        
+        // Cleanup Deck Visuals too (Important for new level colors)
+        if (deckCenterPoint != null)
+        {
+             foreach(Transform child in deckCenterPoint) Destroy(child.gameObject);
+        }
+        activeDeckButtons.Clear();
+        
+        // Initialize occupied array based on manual slots count
+        if (manualSlots != null) 
+        {
+            maxSlots = manualSlots.Count;
+            slotOccupied = new bool[maxSlots];
+            
+            // Allow slots to be used again - Clear stray drones
+            foreach(Transform t in manualSlots)
+            {
+                 foreach(Transform child in t) 
+                {
+                    if (child.GetComponent<PlayerCube>() != null || child.name == "Reservation" || child.name.StartsWith("Drone"))
+                        Destroy(child.gameObject); 
+                }
+            }
+        }
         
         int width = rows[0].Length;
         int height = rows.Length;
@@ -135,6 +215,8 @@ public class PatternGenerator : MonoBehaviour
                 
                 if (c == 'R') pixelColor = Color.red;
                 else if (c == 'K') pixelColor = Color.black;
+                else if (c == 'Y') pixelColor = Color.yellow; // FIXED
+                else if (c == 'B') pixelColor = Color.blue;   // FIXED
                 else if (c == '.' || c == ' ') pixelColor = Color.clear;
 
                 if (pixelColor == Color.clear) continue;
@@ -488,15 +570,29 @@ public class PatternGenerator : MonoBehaviour
 
                     droneObj.transform.SetParent(destSlot);
                     droneObj.transform.localPosition = Vector3.zero;
-                    droneObj.transform.localRotation = Quaternion.identity;
                     
-                    // Fixed Slot Scale
+                    // FIXED: Revert to Local Rotation so it aligns with the tilted slot
+                    droneObj.transform.localRotation = Quaternion.identity; 
+                    
+                    // Fixed Slot Scale Loop
                     Vector3 targetSize = Vector3.one * 0.5f; 
                     Vector3 parentScale = destSlot.lossyScale;
-                    if (parentScale.x != 0) 
-                        droneObj.transform.localScale = new Vector3(targetSize.x/parentScale.x, targetSize.y/parentScale.y, targetSize.z/parentScale.z);
-                    else 
-                        droneObj.transform.localScale = Vector3.one;
+                    
+                    // Prevent divide by zero - Use SIGNED division to maintain positive World Scale
+                    float px = Mathf.Abs(parentScale.x) < 0.001f ? 1 : parentScale.x;
+                    float py = Mathf.Abs(parentScale.y) < 0.001f ? 1 : parentScale.y;
+                    float pz = Mathf.Abs(parentScale.z) < 0.001f ? 1 : parentScale.z;
+
+                    // If parent is negative, local must be negative to make world positive.
+                    // removing Mathf.Abs from the result.
+                    droneObj.transform.localScale = new Vector3(targetSize.x/px, targetSize.y/py, targetSize.z/pz);
+                    
+                    // Force refresh text just in case
+                     Text ammoText = droneObj.GetComponentInChildren<Text>();
+                     if(ammoText != null) {
+                         ammoText.enabled = false;
+                         ammoText.enabled = true;
+                     }
 
                     CheckWinCondition();
                 }
@@ -551,11 +647,14 @@ public class PatternGenerator : MonoBehaviour
                      projectile.transform.localScale = Vector3.one * 0.15f; 
 
                      projectile.transform.DOMove(target.transform.position, 0.12f).SetEase(Ease.Linear).OnComplete(() => { // Faster bullet
-                        if (target != null) 
+                        if(target != null) 
                         { 
                             // JUICE 1: Explosion Debris
                             CreateExplosion(target.transform.position, color);
                             Destroy(target); 
+                            
+                            // CHECK WIN HERE - Logic was missing!
+                            CheckWinCondition();
                         }
                         
                         // JUICE 2: Screen Shake (Subtle)
@@ -567,10 +666,14 @@ public class PatternGenerator : MonoBehaviour
                      // CHECK DEATH CONDITION: Ammo exhausted mid-flight
                      if(dronePC.stackCount <= 0)
                      {
-                         // Kill Movement
+                         // Kill Movement SAFELY
                          drone.transform.DOKill();
+                         DOTween.Kill(drone); // Extra safety
+                         
                          // Explosion Effect?
-                         drone.transform.DOScale(0, 0.1f).OnComplete(() => Destroy(drone));
+                         drone.transform.DOScale(0, 0.1f).OnComplete(() => {
+                             if(drone != null) Destroy(drone);
+                         });
                          
                          // Free the slot logic? For now simple destroy.
                          int slotIdx = manualSlots.IndexOf(targetSlot);
@@ -600,7 +703,9 @@ public class PatternGenerator : MonoBehaviour
             // Allow physics-like movement with Tween
             debris.transform.DOMove(debris.transform.position + randomDir, 0.4f).SetEase(Ease.OutQuad);
             debris.transform.DORotate(Random.insideUnitSphere * 360, 0.4f, RotateMode.FastBeyond360);
-            debris.transform.DOScale(0, 0.4f).OnComplete(()=> Destroy(debris));
+            debris.transform.DOScale(0, 0.4f).OnComplete(()=> {
+                if(debris != null) Destroy(debris);
+            });
         }
     }
 
@@ -829,16 +934,60 @@ public class PatternGenerator : MonoBehaviour
         RenderSettings.fogDensity = 0.015f;
     }
 
+    [Header("UI Settings")]
+    public GameObject winUIObject; // Assign in Inspector
+
     void CheckWinCondition()
     {
-        bool won = true;
-        foreach (var list in activePixelCubes.Values) { if (list.Count > 0) { won = false; break; } }
+        int totalRemaining = 0;
+        System.Text.StringBuilder debugMsg = new System.Text.StringBuilder("WIN CHECK: ");
+        bool hasRemaining = false;
 
-        if (won && isGameActive)
+        foreach (var kvp in activePixelCubes)
         {
-            isGameActive = false;
-            Debug.Log("LEVEL COMPLETED!");
+            // Count only valid objects
+            int count = 0;
+            for(int i = kvp.Value.Count - 1; i >= 0; i--)
+            {
+                if (kvp.Value[i] != null) count++;
+                else kvp.Value.RemoveAt(i); // Cleanup nulls while we are here
+            }
+
+            if (count > 0)
+            {
+                debugMsg.Append($"<color=#{ColorUtility.ToHtmlStringRGB(kvp.Key)}>{kvp.Key}: {count}</color> | ");
+                totalRemaining += count;
+                hasRemaining = true;
+            }
         }
+
+        if(hasRemaining)
+        {
+             Debug.Log($"{debugMsg} TOTAL LEFT: {totalRemaining}");
+        }
+
+        if (totalRemaining == 0 && isGameActive)
+        {
+            Debug.Log("<color=green><b>LEVEL COMPLETED! ALL BLOCKS DESTROYED.</b></color>");
+            isGameActive = false;
+            
+            if(winUIObject != null) 
+            {
+                Debug.Log("Activating Win UI Object...");
+                winUIObject.SetActive(true);
+            }
+            else
+            {
+                Debug.LogWarning("Win UI Object is NOT assigned in Inspector!");
+            }
+        }
+    }
+
+    // REMOVED: CreateWinUI() - User will create manually
+    // Call this from the Button in Inspector
+    public void NextLevel()
+    {
+        LoadLevel(currentLevelIndex + 1);
     }
 
     GameObject SpawnCube(Vector3 position, Color color, Vector3 scale, Quaternion rotation)
