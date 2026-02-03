@@ -11,8 +11,14 @@ public class PlayerCube : MonoBehaviour
         this.cubeColor = color;
         this.gameManager = manager;
         
-        // Set visual color
-        GetComponent<Renderer>().material.color = color;
+        // Safety: Try to find renderer on self, otherwise look in children (for Drone prefabs)
+        Renderer r = GetComponent<Renderer>();
+        if (r == null) r = GetComponentInChildren<Renderer>();
+        
+        if (r != null)
+        {
+            r.material.color = color;
+        }
     }
 
     private void OnMouseDown()

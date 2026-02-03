@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 using System.Collections.Generic;
 using System.Collections;
 using System.Linq;
@@ -12,6 +13,7 @@ public class PatternGenerator : MonoBehaviour
 {
     [Header("Settings")]
     public GameObject cubePrefab;
+    public GameObject dronePrefab; // New Drone Prefab
     public List<Texture2D> patternTextures;
     public float pixelScale = 1.0f;
     public Vector3 spacing = new Vector3(1.1f, 1.1f, 1.1f);
@@ -298,72 +300,88 @@ public class PatternGenerator : MonoBehaviour
         int count = stacks.Count;
         if (count == 0) return;
 
-        // Deck Sizing Logic - Fixed Size as requested
-        float buttonSize = 0.6f; 
+        // Deck Sizing Logic - Simplified Grid (TIGHT FILTER)
+        // Goal: Fit inside the "Red Box" area below slots
+        int cols = 3; 
+        float xSpacing = 1.3f; // Reduced from 2.0f to fit screen width
+        float ySpacing = 1.4f; // Reduced vertical spacing
         
-        float itemSpacing = buttonSize * 1.5f; // More spacing since we have a fixed small size
- 
-        Vector3 rightDir = deckCenterPoint.right;
-        Vector3 upDir = deckCenterPoint.up; 
-        Vector3 forwardDir = deckCenterPoint.forward;
+        // Calculate total width of one row to center it
+        // If col count is less than max cols, center based on actual count? No, keep it stable.
+        float totalRowWidth = (Mathf.Min(count, cols) - 1) * xSpacing;
+        float startX = -totalRowWidth / 2f; 
 
-        Vector3 deckOrigin = deckCenterPoint.position 
-                           + (rightDir * deckPositionOffset.x) 
-                           + (upDir * deckPositionOffset.y) 
-                           + (forwardDir * deckPositionOffset.z);
-
-        // Top Left Logic
-        Vector3 startPos = deckOrigin 
-                         - (rightDir * (maxDeckWidth * 0.5f - buttonSize * 0.5f)) 
-                         + (upDir * (maxDeckHeight * 0.5f - buttonSize * 0.5f));
-
-        int col = 0;
-        int row = 0;
+        // Vertical Start Offset (Adjust this to move the WHOLE group Up/Down)
+        // 0 is the pivot of DeckCenter. If DeckCenter is too low, we might need positive Y.
+        // Looking at images, they are too low. Let's add a positive Y offset base.
+        float startY = 0.5f; 
 
         for (int i = 0; i < count; i++)
         {
             StackData stack = stacks[i];
 
-            float xDist = col * itemSpacing;
-            float yDist = row * itemSpacing;
+            int row = i / cols;
+            int col = i % cols;
 
-            if (xDist + buttonSize > maxDeckWidth + 0.1f) 
+            // Alignment: Start from Left (+ col * spacing)
+            // If it's the 2nd row, and it only has 1 item, should it be centered? 
+            // For now, let's keep left-aligned within the centered block for consistency.
+            
+            // Actually, let's force center align for the last row if it's incomplete?
+            // That looks nicer.
+            int itemsInThisRow = cols;
+            // If it's the last row
+            if (row == (count - 1) / cols) 
             {
-                col = 0;
-                row++;
-                xDist = 0;
-                yDist = row * itemSpacing;
+                itemsInThisRow = count % cols;
+                if (itemsInThisRow == 0) itemsInThisRow = cols;
             }
-
-            Vector3 spawnPos = startPos + (rightDir * xDist) - (upDir * yDist);
             
-            GameObject playerDeckCube = Instantiate(cubePrefab, spawnPos, Quaternion.identity, deckCenterPoint);
-            playerDeckCube.name = $"PlayerBtn_{i}_{stack.count}";
+            float rowWidth = (itemsInThisRow - 1) * xSpacing;
+            float rowStartX = -rowWidth / 2f; // Center this specific row
 
-            // FIXED: Ensure World Scale is always a perfect cube, ignoring parent's distortion
-            Vector3 targetWorldScale = new Vector3(buttonSize, buttonSize, buttonSize);
-            Vector3 parentScale = deckCenterPoint.lossyScale;
-            
-            // Calculate necessary local scale to achieve target world scale
-            Vector3 finalLocalScale = new Vector3(
-                targetWorldScale.x / parentScale.x,
-                targetWorldScale.y / parentScale.y,
-                targetWorldScale.z / parentScale.z
+            Vector3 localPos = new Vector3(
+                rowStartX + (col * xSpacing), 
+                startY - (row * ySpacing), 
+                0
             );
 
-            playerDeckCube.transform.localScale = finalLocalScale;
-            playerDeckCube.transform.localRotation = Quaternion.identity; 
+            // Use Instantiate with parent directly to keep hierarchy clean
+            GameObject playerDeckCube = Instantiate(dronePrefab != null ? dronePrefab : cubePrefab, deckCenterPoint);
+            playerDeckCube.transform.localPosition = localPos + deckPositionOffset; 
+            playerDeckCube.transform.localRotation = Quaternion.Euler(-90, 0, 0); // Face camera
+            
+            // Adjust Scale slightly down to ensure fit
+            playerDeckCube.transform.localScale = Vector3.one * 1.8f; 
+            
+            playerDeckCube.name = $"PlayerBtn_{i}_{stack.count}";
 
-            PlayerCube pc = playerDeckCube.AddComponent<PlayerCube>();
+            // Safely get or add PlayerCube
+            PlayerCube pc = playerDeckCube.GetComponent<PlayerCube>();
+            if (pc == null) pc = playerDeckCube.AddComponent<PlayerCube>();
+            
             pc.Initialize(stack.color, this);
             pc.stackCount = stack.count; 
             
+            // Update Text 
             Text stackText = playerDeckCube.GetComponentInChildren<Text>();
             if (stackText != null) stackText.text = stack.count.ToString(); 
             
-            activeDeckButtons.Add(pc); // Add to tracking list
-
-            col++;
+            TMP_Text stackTextTMP = playerDeckCube.GetComponentInChildren<TMP_Text>();
+            if (stackTextTMP != null) stackTextTMP.text = stack.count.ToString(); 
+            
+            // Colorizing Logic
+            if (dronePrefab != null)
+            {
+                 Renderer[] rends = playerDeckCube.GetComponentsInChildren<Renderer>();
+                 foreach(var r in rends)
+                 {
+                    if(r.name.Contains("Propeller") || r.gameObject.GetComponent<TMP_Text>() != null) continue;
+                    r.material.color = stack.color;
+                 }
+            } 
+            
+            activeDeckButtons.Add(pc); 
         }
     }
 
@@ -473,10 +491,24 @@ public class PatternGenerator : MonoBehaviour
                 
                 if (targetSlotIndex == -1) { Debug.Log("Slots Full!"); return; } // Slots full
 
-                // Spawn Drone
-                droneObj = Instantiate(cubePrefab, senderCube.transform.position, Quaternion.identity);
-                isNewSpawn = true;
-                
+            // Spawn Drone Logic
+            if (isNewSpawn && dronePrefab != null)
+            {
+                 droneObj = Instantiate(dronePrefab, senderCube.transform.position, Quaternion.identity);
+            }
+            else if (!isNewSpawn)
+            {
+                // Re-launching existing, usually already correct prefab type
+                 droneObj = senderCube.gameObject;
+            }
+            else
+            {
+                 // Fallback
+                 droneObj = Instantiate(cubePrefab, senderCube.transform.position, Quaternion.identity);
+            }
+
+            if (isNewSpawn)
+            {
                 // USER REQUEST: Destroy the deck button immediately so it cannot be clicked again
                 if (activeDeckButtons.Contains(senderCube)) activeDeckButtons.Remove(senderCube);
                 Destroy(senderCube.gameObject);
@@ -484,21 +516,38 @@ public class PatternGenerator : MonoBehaviour
                 // Rearrange remaining buttons
                 RearrangeDeck();
             }
+            } // End of Else (Manual/Deck check)
 
             // Setup Drone
             droneObj.name = "Drone_" + color;
-            droneObj.GetComponent<Renderer>().material.color = color;
+            
+            // COLORING: Drone might have multiple renderers. Look for "Body" or color all suitable ones.
+            Renderer[] rends = droneObj.GetComponentsInChildren<Renderer>();
+            foreach(var r in rends)
+            {
+                // Simple heuristic: Don't color Props (usually black) or Text
+                // If the prefab has specific material names, we could check. 
+                // For now, let's color everything that isn't black/dark by default? 
+                // Or just apply to the main mesh.
+                // Safest approach for "Mini_Drone": Color everything except trails/particles for now.
+                if(r.name.Contains("Propeller") || r.gameObject.GetComponent<TMP_Text>() != null) continue;
+                r.material.color = color;
+            }
+
             droneObj.transform.localScale = Vector3.one * 0.8f;
 
             // Setup PlayerCube Component on Drone (to hold ammo data and be clickable)
             PlayerCube dronePC = droneObj.GetComponent<PlayerCube>();
             if (dronePC == null) dronePC = droneObj.AddComponent<PlayerCube>();
             dronePC.Initialize(color, this);
-            dronePC.stackCount = isNewSpawn ? senderCube.stackCount : dronePC.stackCount; // Set Ammo to BUTTON Count if new, else keep existing
+            dronePC.stackCount = isNewSpawn ? senderCube.stackCount : dronePC.stackCount; 
 
-            // Update Text (Legacy)
-            Text ammoText = droneObj.GetComponentInChildren<Text>();
-            if (ammoText != null) ammoText.text = dronePC.stackCount.ToString();
+            // Update Text (TMP & Legacy support)
+            TMP_Text droneText = droneObj.GetComponentInChildren<TMP_Text>();
+            if (droneText != null) droneText.text = dronePC.stackCount.ToString();
+            
+            Text legacyText = droneObj.GetComponentInChildren<Text>();
+            if (legacyText != null) legacyText.text = dronePC.stackCount.ToString();
 
             // --- Movement Logic ---
             
@@ -621,7 +670,11 @@ public class PatternGenerator : MonoBehaviour
                     droneObj.transform.localPosition = Vector3.zero;
                     
                     // FIXED: Revert to Local Rotation so it aligns with the tilted slot
-                    droneObj.transform.localRotation = Quaternion.identity; 
+                    // AND Apply the -90 correction if it's a drone prefab
+                    if (dronePrefab != null)
+                        droneObj.transform.localRotation = Quaternion.Euler(-90, 0, 0); 
+                    else
+                        droneObj.transform.localRotation = Quaternion.identity;
                     
                     // Fixed Slot Scale Loop
                     Vector3 targetSize = Vector3.one * 0.5f; 
@@ -636,12 +689,11 @@ public class PatternGenerator : MonoBehaviour
                     // removing Mathf.Abs from the result.
                     droneObj.transform.localScale = new Vector3(targetSize.x/px, targetSize.y/py, targetSize.z/pz);
                     
-                    // Force refresh text just in case
-                     Text ammoText = droneObj.GetComponentInChildren<Text>();
-                     if(ammoText != null) {
-                         ammoText.enabled = false;
-                         ammoText.enabled = true;
-                     }
+                     // Force refresh text just in case
+                     TMP_Text dText = droneObj.GetComponentInChildren<TMP_Text>();
+                     if(dText != null) { dText.enabled = false; dText.enabled = true; }
+                     Text lText = droneObj.GetComponentInChildren<Text>();
+                     if(lText != null) { lText.enabled = false; lText.enabled = true; }
 
                     CheckWinCondition();
                 }
@@ -665,7 +717,8 @@ public class PatternGenerator : MonoBehaviour
     {
         float interval = duration / (float)shotCount;
         GameObject drone = dronePC.gameObject;
-        Text ammoText = drone.GetComponentInChildren<Text>();
+        TMP_Text ammoTextTMP = drone.GetComponentInChildren<TMP_Text>();
+        Text ammoTextLegacy = drone.GetComponentInChildren<Text>();
 
         for (int i = 0; i < shotCount; i++)
         {
@@ -693,7 +746,8 @@ public class PatternGenerator : MonoBehaviour
                      
                      // Decrement Ammo & Update Text
                      dronePC.stackCount--;
-                     if(ammoText != null) ammoText.text = dronePC.stackCount.ToString();
+                     if(ammoTextTMP != null) ammoTextTMP.text = dronePC.stackCount.ToString();
+                     if(ammoTextLegacy != null) ammoTextLegacy.text = dronePC.stackCount.ToString();
 
                      // IMMEDIATE DESTROY IF EMPTY (User Request: "Don't go to slot")
                      if(dronePC.stackCount <= 0)
