@@ -213,10 +213,11 @@ public class PatternGenerator : MonoBehaviour
                 char c = row[x];
                 Color pixelColor = Color.clear;
                 
-                if (c == 'R') pixelColor = Color.red;
-                else if (c == 'K') pixelColor = Color.black;
-                else if (c == 'Y') pixelColor = Color.yellow; // FIXED
-                else if (c == 'B') pixelColor = Color.blue;   // FIXED
+                if (c == 'R') pixelColor = GetHypercasualColor('R'); // Coral Red
+                else if (c == 'K') pixelColor = GetHypercasualColor('K'); // Dark Slate (Not pure black)
+                else if (c == 'Y') pixelColor = GetHypercasualColor('Y'); // Vibrant Yellow
+                else if (c == 'B') pixelColor = GetHypercasualColor('B'); // Sky Blue
+                else if (c == 'G') pixelColor = GetHypercasualColor('G'); // Lime Green
                 else if (c == '.' || c == ' ') pixelColor = Color.clear;
 
                 if (pixelColor == Color.clear) continue;
@@ -253,9 +254,28 @@ public class PatternGenerator : MonoBehaviour
         List<StackData> deckStacks = new List<StackData>();
         foreach (Color col in colorDiscoveryOrder)
         {
-            // PROPORTIONAL AMMO
-            int ammoCount = activePixelCubes.ContainsKey(col) ? activePixelCubes[col].Count : 10;
-            deckStacks.Add(new StackData { color = col, count = ammoCount });
+            // PROPORTIONAL AMMO: 20-20-10-REMAINDER Logic
+            int totalAmmo = activePixelCubes.ContainsKey(col) ? activePixelCubes[col].Count : 10;
+            
+            // 1. Fill 20s
+            while(totalAmmo >= 20)
+            {
+                deckStacks.Add(new StackData { color = col, count = 20 });
+                totalAmmo -= 20;
+            }
+
+            // 2. If remainder > 10, make a 10 stack
+            if(totalAmmo > 10)
+            {
+                deckStacks.Add(new StackData { color = col, count = 10 });
+                totalAmmo -= 10;
+            }
+
+            // 3. Add whatever is left
+            if(totalAmmo > 0)
+            {
+                deckStacks.Add(new StackData { color = col, count = totalAmmo });
+            }
         }
         
         GeneratePlayerDeck(deckStacks, cubeScale);
@@ -474,11 +494,11 @@ public class PatternGenerator : MonoBehaviour
             PlayerCube dronePC = droneObj.GetComponent<PlayerCube>();
             if (dronePC == null) dronePC = droneObj.AddComponent<PlayerCube>();
             dronePC.Initialize(color, this);
-            dronePC.stackCount = totalTargets; // Set Ammo to Target Count
+            dronePC.stackCount = isNewSpawn ? senderCube.stackCount : dronePC.stackCount; // Set Ammo to BUTTON Count if new, else keep existing
 
             // Update Text (Legacy)
             Text ammoText = droneObj.GetComponentInChildren<Text>();
-            if (ammoText != null) ammoText.text = totalTargets.ToString();
+            if (ammoText != null) ammoText.text = dronePC.stackCount.ToString();
 
             // --- Movement Logic ---
             
@@ -548,25 +568,54 @@ public class PatternGenerator : MonoBehaviour
             Sequence droneSeq = DOTween.Sequence();
             droneSeq.SetId(droneObj); // Tag for killing
             
-            // Move to start point
-            droneSeq.Append(droneObj.transform.DOMove(p1, 0.2f).SetEase(Ease.OutQuad));
-            droneSeq.Append(droneObj.transform.DOMove(p2, 0.4f).SetEase(Ease.Linear));
-            droneSeq.Append(droneObj.transform.DOMove(p3, 0.4f).SetEase(Ease.Linear));
-            droneSeq.Append(droneObj.transform.DOMove(p4, 0.4f).SetEase(Ease.Linear));
-            droneSeq.Append(droneObj.transform.DOMove(p5, 0.3f).SetEase(Ease.Linear));
+            // MOVEMENT & FIRING SEQUENCE (10 shots total per loop: 2-3-2-3)
+            // Path: BottomLeft -> BottomRight -> TopRight -> TopLeft -> BottomLeft
+            float moveDur = 1.0f; 
+
+            // 0. Move to Start (Bottom Left)
+            droneSeq.Append(droneObj.transform.DOMove(p1, 0.5f).SetEase(Ease.OutQuad));
+
+            // 1. P1 -> P4 (Bottom Edge) -> Fire 2 (Short)
+            droneSeq.Append(droneObj.transform.DOMove(p4, moveDur).SetEase(Ease.Linear)
+                .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 2, moveDur, destSlot))));
+            
+            // 2. P4 -> P3 (Right Edge) -> Fire 3 (Long)
+            droneSeq.Append(droneObj.transform.DOMove(p3, moveDur).SetEase(Ease.Linear)
+                .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 3, moveDur, destSlot))));
+
+            // 3. P3 -> P2 (Top Edge) -> Fire 2 (Short)
+            droneSeq.Append(droneObj.transform.DOMove(p2, moveDur).SetEase(Ease.Linear)
+                .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 2, moveDur, destSlot))));
+
+            // 4. P2 -> P1 (Left Edge) -> Fire 3 (Long)
+            droneSeq.Append(droneObj.transform.DOMove(p1, moveDur).SetEase(Ease.Linear)
+                .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 3, moveDur, destSlot))));
             
             // Land
-            droneSeq.Append(droneObj.transform.DOMove(destSlot.position, 0.3f).SetEase(Ease.OutBack));
+            droneSeq.Append(droneObj.transform.DOMove(destSlot.position, 0.6f).SetEase(Ease.OutBack));
             
-            StartCoroutine(DroneRapidFire(dronePC, color, destSlot));
+            // NO FIRING AFTER LANDING
+            // StartCoroutine(DroneRapidFire(dronePC, color, destSlot)); 
 
             // On Complete
             droneSeq.OnComplete(() => {
                 if(droneObj != null)
                 {
-                    // Destroy Reservation
+                    // Destroy Reservation always
                     Transform res = destSlot.Find("Reservation");
                     if(res != null) Destroy(res.gameObject);
+
+                    // CHECK AMMO: If empty, Destroy Self instead of Landing
+                    if (dronePC.stackCount <= 0)
+                    {
+                        // Explode or Shrink
+                         droneObj.transform.DOScale(0, 0.2f).OnComplete(() => Destroy(droneObj));
+                         
+                         // Free the slot logic? Actually the slot was technically reserved but never "filled"
+                         // We might need to ensure slotOccupied is correct if we used it.
+                         // But manualSlots logic here relies on parenting. 
+                         return; 
+                    }
 
                     droneObj.transform.SetParent(destSlot);
                     droneObj.transform.localPosition = Vector3.zero;
@@ -612,23 +661,31 @@ public class PatternGenerator : MonoBehaviour
     }
 
 
-    IEnumerator DroneRapidFire(PlayerCube dronePC, Color color, Transform targetSlot)
+    IEnumerator FireBurst(PlayerCube dronePC, Color color, int shotCount, float duration, Transform destSlot)
     {
-        bool isFlying = true;
+        float interval = duration / (float)shotCount;
         GameObject drone = dronePC.gameObject;
         Text ammoText = drone.GetComponentInChildren<Text>();
 
-        while (drone != null && isFlying)
+        for (int i = 0; i < shotCount; i++)
         {
-            // Check Landing
-            if (drone.transform.parent == targetSlot) { isFlying = false; break; }
+            if (drone == null) yield break;
+            
+            // Check Ammo
+            if(dronePC.stackCount <= 0) yield break;
 
             if (activePixelCubes.ContainsKey(color) && activePixelCubes[color].Count > 0)
             {
-                 GameObject target = activePixelCubes[color]
-                    .Where(t => t != null)
-                    .OrderBy(t => Vector3.Distance(drone.transform.position, t.transform.position)) 
-                    .FirstOrDefault();
+                 var validCubes = activePixelCubes[color].Where(t => t != null).ToList();
+                 GameObject target = null;
+                 
+                 // CLOSEST TARGET (Sweep Effect)
+                 if(validCubes.Count > 0)
+                 {
+                    target = validCubes
+                        .OrderBy(t => Vector3.Distance(drone.transform.position, t.transform.position)) 
+                        .FirstOrDefault();
+                 }
 
                  if (target != null)
                  {
@@ -638,7 +695,28 @@ public class PatternGenerator : MonoBehaviour
                      dronePC.stackCount--;
                      if(ammoText != null) ammoText.text = dronePC.stackCount.ToString();
 
-                     // RECOIL: Punch scale on firing
+                     // IMMEDIATE DESTROY IF EMPTY (User Request: "Don't go to slot")
+                     if(dronePC.stackCount <= 0)
+                     {
+                         // Cleanup Reservation
+                         if(destSlot != null)
+                         {
+                             Transform res = destSlot.Find("Reservation");
+                             if(res != null) Destroy(res.gameObject);
+                         }
+
+                         // Kill Movement & Destroy
+                         drone.transform.DOKill();
+                         DOTween.Kill(drone);
+                         Destroy(drone);
+                         
+                         // Visual FX?
+                         // CreateExplosion(drone.transform.position, color); // Optional self-destruct FX
+                         
+                         yield break;
+                     }
+
+                     // RECOIL
                      drone.transform.DOPunchScale(Vector3.one * 0.2f, 0.1f, 5, 1);
 
                      // Shoot Projectile
@@ -646,44 +724,19 @@ public class PatternGenerator : MonoBehaviour
                      projectile.GetComponent<Renderer>().material.color = color;
                      projectile.transform.localScale = Vector3.one * 0.15f; 
 
-                     projectile.transform.DOMove(target.transform.position, 0.12f).SetEase(Ease.Linear).OnComplete(() => { // Faster bullet
+                     projectile.transform.DOMove(target.transform.position, 0.12f).SetEase(Ease.Linear).OnComplete(() => { 
                         if(target != null) 
                         { 
-                            // JUICE 1: Explosion Debris
                             CreateExplosion(target.transform.position, color);
                             Destroy(target); 
-                            
-                            // CHECK WIN HERE - Logic was missing!
                             CheckWinCondition();
                         }
-                        
-                        // JUICE 2: Screen Shake (Subtle)
                         if(Camera.main != null) Camera.main.transform.DOShakePosition(0.05f, 0.05f, 5, 90, false, true);
-
                         Destroy(projectile);
                      });
-                     
-                     // CHECK DEATH CONDITION: Ammo exhausted mid-flight
-                     if(dronePC.stackCount <= 0)
-                     {
-                         // Kill Movement SAFELY
-                         drone.transform.DOKill();
-                         DOTween.Kill(drone); // Extra safety
-                         
-                         // Explosion Effect?
-                         drone.transform.DOScale(0, 0.1f).OnComplete(() => {
-                             if(drone != null) Destroy(drone);
-                         });
-                         
-                         // Free the slot logic? For now simple destroy.
-                         int slotIdx = manualSlots.IndexOf(targetSlot);
-                         if(slotIdx != -1) slotOccupied[slotIdx] = false;
-
-                         yield break; // STOP COROUTINE
-                     }
                  }
             }
-            yield return new WaitForSeconds(0.12f); // Faster fire rate
+            yield return new WaitForSeconds(interval); 
         }
     }
 
@@ -810,9 +863,16 @@ public class PatternGenerator : MonoBehaviour
         List<StackData> deckStacks = new List<StackData>();
         foreach (Color col in colorDiscoveryOrder)
         {
-            // PROPORTIONAL AMMO: Set stack count equal to the number of pixels in pattern
-            int ammo = activePixelCubes.ContainsKey(col) ? activePixelCubes[col].Count : 10;
-            deckStacks.Add(new StackData { color = col, count = ammo });
+            // PROPORTIONAL AMMO: Split into stacks of max 20
+            int totalAmmo = activePixelCubes.ContainsKey(col) ? activePixelCubes[col].Count : 10;
+            int maxPerStack = 20;
+
+            while (totalAmmo > 0)
+            {
+                int currentStackSize = Mathf.Min(totalAmmo, maxPerStack);
+                deckStacks.Add(new StackData { color = col, count = currentStackSize });
+                totalAmmo -= currentStackSize;
+            }
         }
         
         // GeneratePlayerDeck(deckStacks, cubeScale); // Disabled in OLD
@@ -901,37 +961,51 @@ public class PatternGenerator : MonoBehaviour
 
 
 
+    private Color GetHypercasualColor(char code)
+    {
+        switch (code)
+        {
+            case 'R': return new Color32(255, 77, 77, 255);   // Coral Red (Vibrant)
+            case 'K': return new Color32(44, 62, 80, 255);    // Dark Slate (Soft Black)
+            case 'Y': return new Color32(255, 206, 84, 255);  // Sunflower Yellow
+            case 'B': return new Color32(74, 144, 226, 255);  // Sky Blue
+            case 'G': return new Color32(46, 204, 113, 255);  // Emerald Green
+            default: return Color.white;
+        }
+    }
+
     private void SetupHypercasualVisuals()
     {
-        // 1. Camera Background (Soft Light Blue/White)
+        // 1. Camera Background (Clean, Modern Grey-Blue)
         if(Camera.main != null)
         {
             Camera.main.clearFlags = CameraClearFlags.SolidColor;
-            Camera.main.backgroundColor = new Color32(235, 245, 255, 255); // Very soft blue-white
+            Camera.main.backgroundColor = new Color32(240, 248, 255, 255); // Alice Blue
         }
 
-        // 2. Lighting (Warm Sun)
+        // 2. Lighting (Bright & Flat)
         Light mainLight = FindObjectOfType<Light>();
         if(mainLight != null && mainLight.type == LightType.Directional)
         {
-            mainLight.color = new Color32(255, 250, 240, 255); // Warm white
-            mainLight.intensity = 1.1f;
-            mainLight.transform.rotation = Quaternion.Euler(50, -30, 0);
-            mainLight.shadowStrength = 0.4f; // Softer shadows
+            mainLight.color = Color.white;
+            mainLight.intensity = 1.3f;
+            // Lower angle for longer shadows (aesthetic) OR High angle for flat look. 
+            // Let's go with classic 50/45
+            mainLight.transform.rotation = Quaternion.Euler(50, -45, 0);
+            mainLight.shadowStrength = 0.3f; // Very soft shadows
             mainLight.shadows = LightShadows.Soft;
         }
         
-        // 3. Ambient Lighting (Trilight for contrast)
-        RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-        RenderSettings.ambientSkyColor = new Color32(255, 255, 255, 255);
-        RenderSettings.ambientEquatorColor = new Color32(200, 220, 230, 255); // Blue-ish grey
-        RenderSettings.ambientGroundColor = new Color32(150, 150, 150, 255);
+        // 3. Ambient Lighting (Bright, no pure black shadows)
+        RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+        RenderSettings.ambientLight = new Color32(180, 180, 180, 255); // High ambient light for "Low Poly" flat look
 
-        // 4. Fog (Depth)
+        // 4. Fog (Subtle depth)
         RenderSettings.fog = true;
-        RenderSettings.fogMode = FogMode.ExponentialSquared;
-        RenderSettings.fogColor = new Color32(235, 245, 255, 255); // Match BG
-        RenderSettings.fogDensity = 0.015f;
+        RenderSettings.fogMode = FogMode.Linear;
+        RenderSettings.fogStartDistance = 15f;
+        RenderSettings.fogEndDistance = 40f;
+        RenderSettings.fogColor = new Color32(240, 248, 255, 255); // Match BG
     }
 
     [Header("UI Settings")]
