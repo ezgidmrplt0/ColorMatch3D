@@ -31,7 +31,9 @@ public class PatternGenerator : MonoBehaviour
     public float maxDeckWidth = 5f;
     public float maxDeckHeight = 2f;
     public Vector3 deckRotationOffset = Vector3.zero;
+
     public Vector3 deckPositionOffset = Vector3.zero;
+    public int visibleDeckCount = 3; // How many buttons are clickable at the start?
 
     [Header("Slot Settings")]
     public List<Transform> manualSlots; 
@@ -55,7 +57,26 @@ public class PatternGenerator : MonoBehaviour
     
     // Level System
     private int currentLevelIndex = 0;
+
     private List<string[]> levelPatterns = new List<string[]>();
+
+    // Billboard Text Logic
+    private void LateUpdate()
+    {
+        // Find all active Drones and force their text to face camera
+        // Doing this in Update is easier than parenting tricks
+        if(Camera.main == null) return;
+        
+        var texts = FindObjectsOfType<TMP_Text>();
+        foreach(var t in texts)
+        {
+            if(t.transform.parent != null && t.transform.parent.name.StartsWith("Drone"))
+            {
+                // Force rotation to match camera (Billboard)
+                t.transform.rotation = Camera.main.transform.rotation;
+            }
+        }
+    }
 
 
     private void Start()
@@ -383,6 +404,9 @@ public class PatternGenerator : MonoBehaviour
             
             activeDeckButtons.Add(pc); 
         }
+        
+        // Initial Visual Update for the Queue System
+        UpdateDeckStates();
     }
 
     // New method to rearrange deck buttons
@@ -432,12 +456,52 @@ public class PatternGenerator : MonoBehaviour
             
             col++;
         }
+
+        UpdateDeckStates();
+    }
+
+    // Controls the "Deck Queue" Visuals
+    private void UpdateDeckStates()
+    {
+        for (int i = 0; i < activeDeckButtons.Count; i++)
+        {
+            PlayerCube btn = activeDeckButtons[i];
+            if (btn == null) continue;
+
+            bool isUnlocked = i < visibleDeckCount;
+            
+            // Visual Feedback
+            Renderer[] rends = btn.GetComponentsInChildren<Renderer>();
+            foreach(var r in rends)
+            {
+               if(r.name.Contains("Propeller") || r.gameObject.GetComponent<TMP_Text>() != null) continue;
+               
+               // If Unlocked -> Show Real Color. If Locked -> Show Grey/Shadow
+               r.material.color = isUnlocked ? btn.cubeColor : new Color32(100, 100, 100, 255);
+            }
+        }
     }
 
     // Called by PlayerCube when clicked
     public void OnPlayerCubeClicked(PlayerCube senderCube)
     {
         if (!isGameActive) return;
+        
+        // --- DECK QUEUE CHECK ---
+        // If this cube is in the deck (not a slot re-launch)
+        if (activeDeckButtons.Contains(senderCube))
+        {
+            int index = activeDeckButtons.IndexOf(senderCube);
+            // If the item is beyond the visible/allowed count, reject the click
+            if (index >= visibleDeckCount)
+            {
+                // Feedback: Shake to show it's locked
+                senderCube.transform.DOShakeRotation(0.3f, 15f);
+                return;
+            }
+        }
+        // ------------------------
+
         Debug.Log($"Clicked: {senderCube.name}, Parent: {senderCube.transform.parent?.name}");
         Color color = senderCube.cubeColor;
 
@@ -534,13 +598,14 @@ public class PatternGenerator : MonoBehaviour
                 r.material.color = color;
             }
 
-            droneObj.transform.localScale = Vector3.one * 0.8f;
+            droneObj.transform.localScale = Vector3.one * 3.0f; // INCREASED SIZE
 
             // Setup PlayerCube Component on Drone (to hold ammo data and be clickable)
             PlayerCube dronePC = droneObj.GetComponent<PlayerCube>();
             if (dronePC == null) dronePC = droneObj.AddComponent<PlayerCube>();
             dronePC.Initialize(color, this);
             dronePC.stackCount = isNewSpawn ? senderCube.stackCount : dronePC.stackCount; 
+
 
             // Update Text (TMP & Legacy support)
             TMP_Text droneText = droneObj.GetComponentInChildren<TMP_Text>();
@@ -582,30 +647,29 @@ public class PatternGenerator : MonoBehaviour
             
             if(destSlot == null) { if(isNewSpawn) Destroy(droneObj); return; } // Should not happen easily
 
+            // --- CREATE RESERVATION IMMEDIATELY ---
+            GameObject reservation = new GameObject("Reservation");
+            reservation.transform.SetParent(destSlot);
+            reservation.transform.localPosition = Vector3.zero;
+
             // KILL any existing tweens on this object to prevent conflicts
             DOTween.Kill(droneObj);
             droneObj.transform.DOKill(); // Ensure transform tweens are also killed
 
-            // Unparent while flying
-            droneObj.transform.SetParent(null); 
+            // --- MOVEMENT LOGIC WITH CONTAINER (Fixes Distortion) ---
             
-            // FIX: Reset Scale AFTER unparenting to ensure correct World Scale
-            droneObj.transform.localScale = Vector3.one * 0.8f;
-            droneObj.transform.localRotation = Quaternion.identity; 
+            // 1. Create a Container for clean rotation
+            GameObject droneContainer = new GameObject("DroneContainer_" + color);
+            droneContainer.transform.position = droneObj.transform.position;
             
-            // Re-Parent a dummy/placeholder to reserve the slot? 
-            // Better yet, just trust that no one else takes it because we are single-threaded here mostly.
-            // But if user clicks fast, we might have issues.
-            // Let's set parent to destSlot IMMEDIATELY but keep world position?
-            // No, that messes up Tween.
-            
-            // We can create a placeholder object.
-            GameObject reservation = new GameObject("Reservation");
-            reservation.transform.SetParent(destSlot); 
-            // We will destroy reservation when drone lands.
-            
-            // ... (rest of waypoints logic) ...
-            
+            // 2. Parent Drone to Container
+            // Unparent first to be safe
+            droneObj.transform.SetParent(null);
+            droneObj.transform.SetParent(droneContainer.transform);
+            droneObj.transform.localPosition = Vector3.zero;
+            // FORCE VISUAL to Face Camera (Fixed Local Rotation)
+            droneObj.transform.localRotation = Quaternion.Euler(-90, 0, 0);
+
             // Waypoints
             if (pointBottomLeft == null || pointTopLeft == null || pointTopRight == null || pointBottomRight == null || pointFifthWaypoint == null) return;
             Vector3 p1 = pointBottomLeft.position;
@@ -615,33 +679,46 @@ public class PatternGenerator : MonoBehaviour
             Vector3 p5 = pointFifthWaypoint.position;
             
             Sequence droneSeq = DOTween.Sequence();
-            droneSeq.SetId(droneObj); // Tag for killing
+            droneSeq.SetId(droneContainer); // Tag for killing container
             
-            // MOVEMENT & FIRING SEQUENCE (10 shots total per loop: 2-3-2-3)
             // Path: BottomLeft -> BottomRight -> TopRight -> TopLeft -> BottomLeft
             float moveDur = 1.0f; 
 
-            // 0. Move to Start (Bottom Left)
-            droneSeq.Append(droneObj.transform.DOMove(p1, 0.5f).SetEase(Ease.OutQuad));
+            // 0. Move Container to Start
+            // Face UP (Z=0)
+            droneSeq.Append(droneContainer.transform.DOMove(p1, 0.5f).SetEase(Ease.OutQuad));
+            droneSeq.Join(droneContainer.transform.DORotate(new Vector3(0, 0, 0), 0.5f)); 
 
-            // 1. P1 -> P4 (Bottom Edge) -> Fire 2 (Short)
-            droneSeq.Append(droneObj.transform.DOMove(p4, moveDur).SetEase(Ease.Linear)
+            // 1. P1 -> P4 (Bottom Edge) -> Fire 2
+            droneSeq.Append(droneContainer.transform.DOMove(p4, moveDur).SetEase(Ease.Linear)
                 .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 2, moveDur, destSlot))));
             
-            // 2. P4 -> P3 (Right Edge) -> Fire 3 (Long)
-            droneSeq.Append(droneObj.transform.DOMove(p3, moveDur).SetEase(Ease.Linear)
+            // Rotate Container to Face LEFT (Z=90) -> No Distortion!
+            droneSeq.Append(droneContainer.transform.DORotate(new Vector3(0, 0, 90), 0.2f));
+
+            // 2. P4 -> P3 (Right Edge)
+            droneSeq.Append(droneContainer.transform.DOMove(p3, moveDur).SetEase(Ease.Linear)
                 .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 3, moveDur, destSlot))));
 
-            // 3. P3 -> P2 (Top Edge) -> Fire 2 (Short)
-            droneSeq.Append(droneObj.transform.DOMove(p2, moveDur).SetEase(Ease.Linear)
+            // Rotate Container to Face DOWN (Z=180)
+            droneSeq.Append(droneContainer.transform.DORotate(new Vector3(0, 0, 180), 0.2f));
+
+            // 3. P3 -> P2 (Top Edge)
+            droneSeq.Append(droneContainer.transform.DOMove(p2, moveDur).SetEase(Ease.Linear)
                 .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 2, moveDur, destSlot))));
 
-            // 4. P2 -> P1 (Left Edge) -> Fire 3 (Long)
-            droneSeq.Append(droneObj.transform.DOMove(p1, moveDur).SetEase(Ease.Linear)
+            // Rotate Container to Face RIGHT (Z=270 or -90)
+            droneSeq.Append(droneContainer.transform.DORotate(new Vector3(0, 0, 270), 0.2f));
+
+            // 4. P2 -> P1 (Left Edge)
+            droneSeq.Append(droneContainer.transform.DOMove(p1, moveDur).SetEase(Ease.Linear)
                 .OnPlay(() => StartCoroutine(FireBurst(dronePC, color, 3, moveDur, destSlot))));
             
-            // Land
-            droneSeq.Append(droneObj.transform.DOMove(destSlot.position, 0.6f).SetEase(Ease.OutBack));
+            // Rotate back to Up (Z=0)
+            droneSeq.Append(droneContainer.transform.DORotate(new Vector3(0, 0, 0), 0.2f));
+            
+            // Land (Move Container to Slot)
+            droneSeq.Append(droneContainer.transform.DOMove(destSlot.position, 0.6f).SetEase(Ease.OutBack));
             
             // NO FIRING AFTER LANDING
             // StartCoroutine(DroneRapidFire(dronePC, color, destSlot)); 
@@ -650,52 +727,62 @@ public class PatternGenerator : MonoBehaviour
             droneSeq.OnComplete(() => {
                 if(droneObj != null)
                 {
-                    // Destroy Reservation always
+                    // Unparent form Container BEFORE destroying container
+                    droneObj.transform.SetParent(null);
+                    if(droneContainer != null) Destroy(droneContainer);
+
+                    // Destroy Reservation
                     Transform res = destSlot.Find("Reservation");
                     if(res != null) Destroy(res.gameObject);
-
-                    // CHECK AMMO: If empty, Destroy Self instead of Landing
+                    
+                    // CHECK AMMO
                     if (dronePC.stackCount <= 0)
                     {
-                        // Explode or Shrink
                          droneObj.transform.DOScale(0, 0.2f).OnComplete(() => Destroy(droneObj));
-                         
-                         // Free the slot logic? Actually the slot was technically reserved but never "filled"
-                         // We might need to ensure slotOccupied is correct if we used it.
-                         // But manualSlots logic here relies on parenting. 
                          return; 
                     }
 
+                    // LANDING LOGIC
                     droneObj.transform.SetParent(destSlot);
+                    
+                    // Reset Local Position to Zero first to center it
                     droneObj.transform.localPosition = Vector3.zero;
                     
-                    // FIXED: Revert to Local Rotation so it aligns with the tilted slot
-                    // AND Apply the -90 correction if it's a drone prefab
-                    if (dronePrefab != null)
-                        droneObj.transform.localRotation = Quaternion.Euler(-90, 0, 0); 
-                    else
-                        droneObj.transform.localRotation = Quaternion.identity;
+                    // Global Rotation to face Camera (Standard View)
+                    droneObj.transform.rotation = Quaternion.Euler(-90, 0, 0); 
                     
-                    // Fixed Slot Scale Loop
-                    Vector3 targetSize = Vector3.one * 0.5f; 
-                    Vector3 parentScale = destSlot.lossyScale;
+                    // Final Position Adjustment (Visual Offset)
+                    // We move it slightly towards the camera (Assuming Camera is at Z < 0) or just Z offset
+                    // Trying Z = -0.3f (Closer to camera if camera is looking from -Z)
+                    droneObj.transform.localPosition = new Vector3(0, 0, -0.3f); 
                     
-                    // Prevent divide by zero - Use SIGNED division to maintain positive World Scale
-                    float px = Mathf.Abs(parentScale.x) < 0.001f ? 1 : parentScale.x;
-                    float py = Mathf.Abs(parentScale.y) < 0.001f ? 1 : parentScale.y;
-                    float pz = Mathf.Abs(parentScale.z) < 0.001f ? 1 : parentScale.z;
+                    // FIXED Scale Logic
+                    float targetGlobalScale = 1.2f; 
+                    Vector3 pScale = destSlot.lossyScale;
+                    
+                    // Normalize divisor
+                     float px = Mathf.Abs(pScale.x) < 0.001f ? 1 : pScale.x;
+                     float py = Mathf.Abs(pScale.y) < 0.001f ? 1 : pScale.y;
+                     float pz = Mathf.Abs(pScale.z) < 0.001f ? 1 : pScale.z;
 
-                    // If parent is negative, local must be negative to make world positive.
-                    // removing Mathf.Abs from the result.
-                    droneObj.transform.localScale = new Vector3(targetSize.x/px, targetSize.y/py, targetSize.z/pz);
+                    droneObj.transform.localScale = new Vector3(targetGlobalScale/px, targetGlobalScale/py, targetGlobalScale/pz);
                     
-                     // Force refresh text just in case
+                     // Force refresh text
                      TMP_Text dText = droneObj.GetComponentInChildren<TMP_Text>();
                      if(dText != null) { dText.enabled = false; dText.enabled = true; }
                      Text lText = droneObj.GetComponentInChildren<Text>();
                      if(lText != null) { lText.enabled = false; lText.enabled = true; }
 
+                     // Ensure Visible
+                     droneObj.SetActive(true);
+                     Renderer[] rnds = droneObj.GetComponentsInChildren<Renderer>();
+                     foreach(var r in rnds) r.enabled = true;
+
                     CheckWinCondition();
+                }
+                else
+                {
+                    if(droneContainer != null) Destroy(droneContainer);
                 }
             });
             
