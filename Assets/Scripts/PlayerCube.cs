@@ -4,6 +4,8 @@ public class PlayerCube : MonoBehaviour
 {
     public Color cubeColor;
     public int stackCount; // How many items are in this stack
+    public bool isReadyToFire = false; // Controls if Turret should pick this up
+    public Transform currentSlot; // Which slot this ammo belongs to (without parenting)
     private PatternGenerator gameManager;
 
     public void Initialize(Color color, PatternGenerator manager)
