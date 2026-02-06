@@ -64,8 +64,6 @@ public class PatternGenerator : MonoBehaviour
 
     // Level System
     private int currentLevelIndex = 0;
-
-    private List<string[]> levelPatterns = new List<string[]>();
     
     // Main Update Loop for Queue
     private void Update()
@@ -164,80 +162,51 @@ public class PatternGenerator : MonoBehaviour
     
     private void InitializeLevels()
     {
-        levelPatterns.Clear();
+        // PNG-based pattern system: Reads patterns from patternTextures list
+        // Each texture in the list becomes a level
+        // Transparent/white pixels are ignored, colored pixels become blocks
         
-        // Level 1: HEART (Easy)
-        levelPatterns.Add(new string[] {
-            ".............",
-            "...R.....R...",
-            "..RRR...RRR..",
-            ".RRRRR.RRRRR.",
-            ".RRRRRRRRRRR.",
-            "..RRRRRRRRR..",
-            "...RRRRRRR...",
-            "....RRRRR....",
-            ".....RRR.....",
-            "......R......"
-        });
-
-        // Level 2: SMILEY (Yellow & Black)
-        levelPatterns.Add(new string[] {
-            ".............",
-            "...YYYYYYY...",
-            "..YKKYYYKKY..",
-            ".YYYYYYYYYYY.",
-            ".YKYKYKYKYKY.",
-            ".YYYYYYYYYYY.",
-            "..YKKKKKKKY..",
-            "...YYYYYYY...",
-            "............."
-        });
+        if (patternTextures == null || patternTextures.Count == 0)
+        {
+            Debug.LogWarning("No pattern textures assigned! Add PNG files to patternTextures list in Inspector.");
+            return;
+        }
         
-        // Level 3: SWORD (Blue & Gray/Black)
-        levelPatterns.Add(new string[] {
-            "......B......",
-            "......B......",
-            ".....BBB.....",
-            ".....B.B.....",
-            "....B...B....",
-            "....B...B....",
-            "....B...B....",
-            "...KKKKKKK...",
-            "......K......",
-            "......K......"
-        });
-
-        // Level 4: COMPLEX HEART (Original)
-        levelPatterns.Add(new string[] {
-            ".............",
-            "...KK...KK...",
-            "..KRRK.KRRK..",
-            ".KRRRRKRRRRK.",
-            ".KRRRRRRRRRK.",
-            "..KRRRRRRRK..",
-            "...KRRRRRK...",
-            "....KRRRK....",
-            ".....KRK.....",
-            "......K......"
-        });
+        Debug.Log($"Initialized {patternTextures.Count} levels from PNG textures.");
     }
 
     public void LoadLevel(int index)
     {
-        if(index < 0 || index >= levelPatterns.Count) index = 0; // Loop back
+        if (patternTextures == null || patternTextures.Count == 0)
+        {
+            Debug.LogError("No pattern textures assigned! Add PNG files to patternTextures list.");
+            return;
+        }
+        
+        if(index < 0 || index >= patternTextures.Count) index = 0; // Loop back
         currentLevelIndex = index;
 
-        GeneratePatternFromMap(levelPatterns[currentLevelIndex]);
+        GeneratePatternFromTexture(patternTextures[currentLevelIndex]);
         
         // Hide Manual UI
         if(winUIObject != null) winUIObject.SetActive(false);
         
-        Debug.Log($"Level {index + 1} Loaded!");
+        Debug.Log($"Level {index + 1} Loaded from texture: {patternTextures[currentLevelIndex].name}");
     }
 
-
-    public void GeneratePatternFromMap(string[] rows)
+    /// <summary>
+    /// Generates a pattern from a PNG texture.
+    /// Each colored pixel becomes a cube. Transparent/white pixels are ignored.
+    /// Similar colors are merged to prevent slight variations from creating multiple drone types.
+    /// </summary>
+    public void GeneratePatternFromTexture(Texture2D texture)
     {
+        if (texture == null)
+        {
+            Debug.LogError("Pattern texture is null!");
+            return;
+        }
+        
         // Cleanup existing patterns
         foreach(var list in activePixelCubes.Values) { foreach(var obj in list) if(obj) Destroy(obj); }
         activePixelCubes.Clear();
@@ -266,12 +235,16 @@ public class PatternGenerator : MonoBehaviour
             }
         }
         
-        int width = rows[0].Length;
-        int height = rows.Length;
+        int width = texture.width;
+        int height = texture.height;
         
-        // Adjust sizing
-        float calculatedSpacing = 0.2f; 
-        if (maxPatternWidth > 0) calculatedSpacing = (maxPatternWidth / width) * 0.8f;
+        // Adjust sizing - Scale pattern to fill available area
+        // Use the larger dimension to calculate spacing so pattern fits within bounds
+        float widthSpacing = maxPatternWidth / (float)width;
+        float heightSpacing = maxPatternHeight / (float)height;
+        
+        // Use the smaller of the two to ensure pattern fits in both dimensions
+        float calculatedSpacing = Mathf.Min(widthSpacing, heightSpacing);
 
         Vector3 cubeScale = Vector3.one * calculatedSpacing * 0.90f; 
  
@@ -285,23 +258,52 @@ public class PatternGenerator : MonoBehaviour
 
         List<Color> colorDiscoveryOrder = new List<Color>();
         HashSet<Color> discoveredColors = new HashSet<Color>();
+        
+        // Dictionary to map similar colors to a single representative color
+        Dictionary<Color, Color> colorMapping = new Dictionary<Color, Color>();
+
+        // Read all pixels from texture - with fallback for non-readable textures
+        Color[] pixels = GetTexturePixels(texture);
 
         for (int y = 0; y < height; y++)
         {
-            string row = rows[height - 1 - y]; 
             for (int x = 0; x < width; x++)
             {
-                char c = row[x];
-                Color pixelColor = Color.clear;
+                Color pixelColor = pixels[y * width + x];
                 
-                if (c == 'R') pixelColor = GetHypercasualColor('R'); // Coral Red
-                else if (c == 'K') pixelColor = GetHypercasualColor('K'); // Dark Slate (Not pure black)
-                else if (c == 'Y') pixelColor = GetHypercasualColor('Y'); // Vibrant Yellow
-                else if (c == 'B') pixelColor = GetHypercasualColor('B'); // Sky Blue
-                else if (c == 'G') pixelColor = GetHypercasualColor('G'); // Lime Green
-                else if (c == '.' || c == ' ') pixelColor = Color.clear;
-
-                if (pixelColor == Color.clear) continue;
+                // Skip transparent or nearly white pixels
+                if (pixelColor.a < 0.1f) continue;
+                if (pixelColor.r > 0.95f && pixelColor.g > 0.95f && pixelColor.b > 0.95f) continue;
+                
+                // Normalize the color to find similar colors (merge slightly different shades)
+                Color normalizedColor = NormalizeColor(pixelColor);
+                
+                // Check if we already have a similar color mapped
+                Color mappedColor = normalizedColor;
+                if (!colorMapping.ContainsKey(normalizedColor))
+                {
+                    // Find existing similar color or use this one
+                    bool foundSimilar = false;
+                    foreach (var existingColor in colorMapping.Values)
+                    {
+                        if (AreColorsSimilar(normalizedColor, existingColor, 0.15f))
+                        {
+                            colorMapping[normalizedColor] = existingColor;
+                            mappedColor = existingColor;
+                            foundSimilar = true;
+                            break;
+                        }
+                    }
+                    if (!foundSimilar)
+                    {
+                        colorMapping[normalizedColor] = normalizedColor;
+                        mappedColor = normalizedColor;
+                    }
+                }
+                else
+                {
+                    mappedColor = colorMapping[normalizedColor];
+                }
 
                 float xPos = (x * calculatedSpacing) - widthOffset;
                 float yPos = (y * calculatedSpacing) - heightOffsetMap;
@@ -311,25 +313,27 @@ public class PatternGenerator : MonoBehaviour
                 Vector3 finalPos = basePos + nudge;
                 
                 GameObject pixelCube = Instantiate(cubePrefab, finalPos, Quaternion.identity);
-                pixelCube.GetComponent<Renderer>().material.color = pixelColor;
+                pixelCube.GetComponent<Renderer>().material.color = mappedColor;
                 pixelCube.transform.localScale = cubeScale;
                 
                 // Hide Text on Pattern Cubes
                 Text textComp = pixelCube.GetComponentInChildren<Text>();
                 if (textComp != null) textComp.enabled = false; 
                 
-                if (!activePixelCubes.ContainsKey(pixelColor)) activePixelCubes[pixelColor] = new List<GameObject>();
-                activePixelCubes[pixelColor].Add(pixelCube);
+                if (!activePixelCubes.ContainsKey(mappedColor)) activePixelCubes[mappedColor] = new List<GameObject>();
+                activePixelCubes[mappedColor].Add(pixelCube);
 
-                if (!discoveredColors.Contains(pixelColor))
+                if (!discoveredColors.Contains(mappedColor))
                 {
-                    discoveredColors.Add(pixelColor);
-                    colorDiscoveryOrder.Add(pixelColor);
+                    discoveredColors.Add(mappedColor);
+                    colorDiscoveryOrder.Add(mappedColor);
                 }
             }
         }
 
         isGameActive = true;
+        
+        Debug.Log($"Pattern generated: {width}x{height} pixels, {colorDiscoveryOrder.Count} unique colors, {activePixelCubes.Values.Sum(l => l.Count)} total cubes");
         
         // --- Generate Stacks Logic ---
         List<StackData> deckStacks = new List<StackData>();
@@ -360,6 +364,73 @@ public class PatternGenerator : MonoBehaviour
         }
         
         GeneratePlayerDeck(deckStacks, cubeScale);
+    }
+    
+    /// <summary>
+    /// Normalizes a color by rounding RGB values to reduce slight variations.
+    /// </summary>
+    private Color NormalizeColor(Color c)
+    {
+        // Round to nearest 0.1 to group similar colors
+        float r = Mathf.Round(c.r * 10f) / 10f;
+        float g = Mathf.Round(c.g * 10f) / 10f;
+        float b = Mathf.Round(c.b * 10f) / 10f;
+        return new Color(r, g, b, 1f);
+    }
+    
+    /// <summary>
+    /// Checks if two colors are similar within a given threshold.
+    /// </summary>
+    private bool AreColorsSimilar(Color a, Color b, float threshold)
+    {
+        return Mathf.Abs(a.r - b.r) < threshold &&
+               Mathf.Abs(a.g - b.g) < threshold &&
+               Mathf.Abs(a.b - b.b) < threshold;
+    }
+    
+    /// <summary>
+    /// Gets pixels from a texture, even if it's not marked as readable.
+    /// Uses RenderTexture as a fallback for non-readable textures.
+    /// </summary>
+    private Color[] GetTexturePixels(Texture2D texture)
+    {
+        // First try direct read if texture is readable
+        if (texture.isReadable)
+        {
+            return texture.GetPixels();
+        }
+        
+        // Fallback: Use RenderTexture to read non-readable textures
+        Debug.Log($"Texture '{texture.name}' is not readable. Using RenderTexture fallback.");
+        
+        RenderTexture tempRT = RenderTexture.GetTemporary(
+            texture.width, 
+            texture.height, 
+            0, 
+            RenderTextureFormat.ARGB32);
+        
+        // Copy texture to RenderTexture
+        Graphics.Blit(texture, tempRT);
+        
+        // Store the current active RenderTexture
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = tempRT;
+        
+        // Create a new readable texture and read the pixels
+        Texture2D readableTexture = new Texture2D(texture.width, texture.height, TextureFormat.ARGB32, false);
+        readableTexture.ReadPixels(new Rect(0, 0, tempRT.width, tempRT.height), 0, 0);
+        readableTexture.Apply();
+        
+        // Restore the previous RenderTexture
+        RenderTexture.active = previous;
+        RenderTexture.ReleaseTemporary(tempRT);
+        
+        Color[] pixels = readableTexture.GetPixels();
+        
+        // Clean up the temporary texture
+        Destroy(readableTexture);
+        
+        return pixels;
     }
 
     private struct StackData
