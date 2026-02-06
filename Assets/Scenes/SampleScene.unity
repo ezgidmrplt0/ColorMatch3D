@@ -3710,15 +3710,17 @@ MonoBehaviour:
   mainTurretTransform: {fileID: 420870256}
   turretRotationOffset: 0
   patternTextures:
-  - {fileID: 2800000, guid: 23ac066bc6f7b5b43b868ba8d77db6e1, type: 3}
+  - {fileID: 2800000, guid: cff54d426a7ff7a609d9146edfddb63b, type: 3}
+  - {fileID: 2800000, guid: 2ba2dee4fecae015fba834be07cbbd3d, type: 3}
+  - {fileID: 2800000, guid: 35ac733b91d14363da7bad6a83e56b96, type: 3}
   pixelScale: 1
   spacing: {x: 1.1, y: 1.1, z: 1.1}
   centerPoint: {fileID: 1231361124}
   rotationOffset: {x: -90, y: 0.69, z: 0}
   positionOffset: {x: -0.06, y: -0.49, z: 1.62}
   heightOffset: 0.5
-  maxPatternWidth: 2.5
-  maxPatternHeight: 3.66
+  maxPatternWidth: 3.5
+  maxPatternHeight: 3.5
   deckCenterPoint: {fileID: 992178955}
   maxDeckWidth: 3.07
   maxDeckHeight: 1.49
