@@ -111,18 +111,23 @@ public class PatternGenerator : MonoBehaviour
     // Billboard Text Logic
     private void LateUpdate()
     {
-        // Find all active Drones and force their text to face camera
-        // Doing this in Update is easier than parenting tricks
         if(Camera.main == null) return;
         
-        var texts = FindObjectsOfType<TMP_Text>();
-        foreach(var t in texts)
+        // Robust Billboarding: Find all PlayerCubes (Drones/Buttons) and align their text
+        var allCubes = FindObjectsOfType<PlayerCube>();
+        Quaternion camRot = Camera.main.transform.rotation;
+        
+        foreach(var pc in allCubes)
         {
-            if(t.transform.parent != null && t.transform.parent.name.StartsWith("Drone"))
-            {
-                // Force rotation to match camera (Billboard)
-                t.transform.rotation = Camera.main.transform.rotation;
-            }
+            if(pc == null || !pc.gameObject.activeInHierarchy) continue;
+
+            // Handle TMP
+            TMP_Text t = pc.GetComponentInChildren<TMP_Text>();
+            if(t != null) t.transform.rotation = camRot;
+
+            // Handle Legacy Text
+            Text tLeg = pc.GetComponentInChildren<Text>();
+            if(tLeg != null) tLeg.transform.rotation = camRot;
         }
     }
 
@@ -714,12 +719,13 @@ public class PatternGenerator : MonoBehaviour
 
             // --- TURRET & AMMO LOGIC START ---
             
-            // 1. Move Ammo to Slot (Reload Phase)
-            // DO NOT parent to slot (slot may have non-uniform scale causing distortion)
-            // Instead, keep as root and move to slot's WORLD position
+            // 1. Move Ammo to Slot (Reload Phase) -> REMOVED VISUAL MOVEMENT to Slot
+            // The drone will stay where it spawned (Deck position) until the Turret picks it up.
+            // But we must logically assign it to the slot so the Queue knows it's "next".
+            
             droneObj.transform.SetParent(null); // Keep as root object
             
-            // Store slot reference on PlayerCube for later lookup
+            // Store slot reference on PlayerCube for later lookup by ProcessTurretQueue
             dronePC.currentSlot = destSlot;
             
             // Generate Reservation to block slot immediately
@@ -727,33 +733,23 @@ public class PatternGenerator : MonoBehaviour
             reservation.transform.SetParent(destSlot);
             reservation.transform.localPosition = Vector3.zero;
 
-            Sequence ammoSeq = DOTween.Sequence();
+            // VISUAL: Just jump in place to show "Selected/Ready"
+            // Do NOT move to slot.
+            droneObj.transform.DOLocalJump(droneObj.transform.localPosition, 0.5f, 1, 0.3f);
             
-            // Jump to Slot's WORLD position (not local) AND Shrink
-            // Add Z offset of -2 so drone sits in front of slot
-            Vector3 slotTargetPos = destSlot.position + new Vector3(0, 0, -2f);
-            ammoSeq.Append(droneObj.transform.DOJump(slotTargetPos, 2.0f, 1, 0.6f));
-            ammoSeq.Join(droneObj.transform.DORotate(Vector3.zero, 0.6f));
-            ammoSeq.Join(droneObj.transform.DOScale(Vector3.one * 0.01f, 0.6f)); // Shrink to near-zero
-            
-            // NO AUTO FIRE - The Update loop will pick it up when it lands/settles
-            // But we need to make sure the loop doesn't pick it up WHILE it is jumping?
-            // The loop checks "ammo.transform.parent == slot". 
-            // We set parent immediately above. 
-            // Issue: Loop might grab it mid-air.
-            // Fix: We can use a flag on the ammo or just wait. 
-            // Or, let the Queue pickup logic be slightly tolerant. 
-            // Actually, visually picking it up mid-air is weird.
-            // Let's add a temporary component or tag "Moving"?
-            // Simpler: Don't destroy deck button until landed?
-            
-            // Let's add a "IsReady" flag to PlayerCube? Or just let the sequence verify.
+            // Ensure correct scale just in case
+            if (isNewSpawn)
+            {
+                // If it was a button, maybe scale it up to Drone size?
+                // The earlier code set scale to 3.0f, let's respect that or Tween it.
+                 droneObj.transform.DOScale(Vector3.one * 0.7f, 0.3f); // Match turret load scale target approximately
+            }
             
             // Update Deck Visual if it was a spawn
             if (isNewSpawn)
             {
-                senderCube.transform.DOPunchScale(Vector3.one * 0.1f, 0.15f);
-                if (senderCube.stackCount <= 0) Destroy(senderCube.gameObject);
+                // senderCube was already destroyed/removed above if isNewSpawn is true
+                // So nothing to punch here.
             }
         }
         else
@@ -767,25 +763,98 @@ public class PatternGenerator : MonoBehaviour
         isTurretBusy = true;
         GameObject ammoObj = ammoPC.gameObject;
         
-        if (mainTurretTransform == null) { isTurretBusy = false; yield break; }
+        // Safety Checks
+        if (mainTurretTransform == null || pointBottomLeft == null || pointBottomRight == null || pointTopRight == null || pointTopLeft == null) 
+        { 
+            Debug.LogError("Waypoints or Turret Missing! Cannot Execute Path.");
+            ammoObj.transform.DOScale(0, 0.2f).OnComplete(() => Destroy(ammoObj));
+            isTurretBusy = false; 
+            yield break; 
+        }
 
-        // A. Move Ammo from Slot -> Turret (Spinning!)
-        ammoObj.transform.SetParent(mainTurretTransform);
+        // Capture Original State
+        Vector3 originalTurretPos = mainTurretTransform.position;
+        Quaternion originalTurretRot = mainTurretTransform.rotation;
         
-        // Visual Flourish: Spin and Move
-        float loadDuration = 0.5f;
-        ammoObj.transform.DOLocalMove(new Vector3(0, 1.5f, 0), loadDuration).SetEase(Ease.InOutBack); // Move above turret
-        ammoObj.transform.DOLocalRotate(new Vector3(0, 360, 0), loadDuration, RotateMode.FastBeyond360);
-        // Removed Scale modification to keep prefab scale
+        // LOCK Z: Use Turret's Original Depth
+        float fixedZ = originalTurretPos.z;
 
-        yield return new WaitForSeconds(loadDuration);
+        // Calculate Flattened Waypoints (Inspector Order: BL -> TL -> TR -> BR)
+        Vector3 p1 = new Vector3(pointBottomLeft.position.x, pointBottomLeft.position.y, fixedZ);
+        Vector3 p2 = new Vector3(pointTopLeft.position.x, pointTopLeft.position.y, fixedZ);
+        Vector3 p3 = new Vector3(pointTopRight.position.x, pointTopRight.position.y, fixedZ);
+        Vector3 p4 = new Vector3(pointBottomRight.position.x, pointBottomRight.position.y, fixedZ);
 
-        // B. Fire Loop
-        // We will shoot one by one
-        int shotsFiredThisTurn = 0;
-        int maxShotsPerTurn = 10;
+        // Calculate Center Position (Average of Waypoints)
+        Vector3 centerPos = (p1 + p2 + p3 + p4) / 4f;
 
-        while(ammoPC.stackCount > 0 && shotsFiredThisTurn < maxShotsPerTurn)
+        // Pre-Calculate Look Rotations for each Waypoint (Look at Center)
+        // We use Vector3.back as 'up' for 2D plane orientation
+        Quaternion rot1 = Quaternion.LookRotation(centerPos - p1, Vector3.back);
+        Quaternion rot2 = Quaternion.LookRotation(centerPos - p2, Vector3.back);
+        Quaternion rot3 = Quaternion.LookRotation(centerPos - p3, Vector3.back);
+        Quaternion rot4 = Quaternion.LookRotation(centerPos - p4, Vector3.back);
+
+        // 1. LOAD AMMO
+        ammoObj.transform.SetParent(mainTurretTransform);
+        Transform res = slot.Find("Reservation");
+        if(res != null) Destroy(res.gameObject);
+        
+        Sequence loadSeq = DOTween.Sequence();
+        loadSeq.Append(ammoObj.transform.DOLocalJump(new Vector3(0, 0.8f, 0), 2.0f, 1, 0.4f)); 
+        loadSeq.Join(ammoObj.transform.DOScale(Vector3.one * 0.7f, 0.4f)); 
+        loadSeq.Join(ammoObj.transform.DOLocalRotate(Vector3.zero, 0.4f));
+        yield return loadSeq.WaitForCompletion();
+
+        // 2. MOVE TO START (Waypoint 4: Bottom Right - Requested Start)
+        float legDuration = 0.8f;
+        float turnDuration = 0.4f; 
+
+        // Prepare Start: Look at P4
+        mainTurretTransform.rotation = Quaternion.LookRotation(p4 - mainTurretTransform.position, Vector3.back);
+        
+        // Move to P4
+        Sequence startSeq = DOTween.Sequence();
+        startSeq.Append(mainTurretTransform.DOMove(p4, legDuration).SetEase(Ease.Linear));
+        startSeq.Join(mainTurretTransform.DORotateQuaternion(rot4, legDuration).SetEase(Ease.Linear));
+        yield return startSeq.WaitForCompletion();
+
+        // 3. MOVEMENT LOOP: 4 -> 1 -> 2 -> 3 -> 4
+        Sequence pathSeq = DOTween.Sequence();
+        
+        // Leg 1: P4 -> P1 (End facing Center from P1)
+        pathSeq.Append(mainTurretTransform.DOMove(p1, legDuration).SetEase(Ease.Linear)); 
+        pathSeq.Join(mainTurretTransform.DORotateQuaternion(rot1, legDuration).SetEase(Ease.Linear));
+        
+        // Leg 2: P1 -> P2 (End facing Center from P2)
+        pathSeq.Append(mainTurretTransform.DOMove(p2, legDuration).SetEase(Ease.Linear));
+        pathSeq.Join(mainTurretTransform.DORotateQuaternion(rot2, legDuration).SetEase(Ease.Linear)); 
+        
+        // Leg 3: P2 -> P3 (End facing Center from P3)
+        pathSeq.Append(mainTurretTransform.DOMove(p3, legDuration).SetEase(Ease.Linear));
+        pathSeq.Join(mainTurretTransform.DORotateQuaternion(rot3, legDuration).SetEase(Ease.Linear)); 
+        
+        // Leg 4: P3 -> P4 (End facing Center from P4)
+        pathSeq.Append(mainTurretTransform.DOMove(p4, legDuration).SetEase(Ease.Linear));
+        pathSeq.Join(mainTurretTransform.DORotateQuaternion(rot4, legDuration).SetEase(Ease.Linear)); 
+
+        // REMOVED Infinite Loop to stop after one round
+        // pathSeq.SetLoops(-1); 
+
+        // 4. FIRING LOOP
+        float fireRate = 0.35f; 
+        float totalLoopDuration = legDuration * 4.0f; // P1->P2->P3->P4->P1
+        float endTime = Time.time + totalLoopDuration;
+
+        TMP_Text droneText = ammoObj.GetComponentInChildren<TMP_Text>();
+        Text legacyText = ammoObj.GetComponentInChildren<Text>();
+        
+        // Immediate Update
+        if(droneText != null) droneText.text = ammoPC.stackCount.ToString();
+        if(legacyText != null) legacyText.text = ammoPC.stackCount.ToString();
+        
+        // Fire ONLY while moving (one loop) and while ammo exists
+        while(ammoPC.stackCount > 0 && Time.time < endTime)
         {
              if (!activePixelCubes.ContainsKey(color) || activePixelCubes[color].Count == 0) break;
 
@@ -796,149 +865,95 @@ public class PatternGenerator : MonoBehaviour
                     .OrderBy(t => Vector3.Distance(mainTurretTransform.position, t.transform.position)) 
                     .FirstOrDefault();
              
-             if(target == null) break;
-
-             // 1. Rotate Turret to Target (Local X-Axis Only, Fixed Local Y/Z)
-             Vector3 dir = target.transform.position - mainTurretTransform.position;
-
-             if (dir != Vector3.zero)
+             if(target != null)
              {
-                 // Calculate World Look
-                 Quaternion worldLook = Quaternion.LookRotation(dir);
+                 activePixelCubes[color].Remove(target);
+                 ammoPC.stackCount--;
                  
-                 // Convert to Local Space
-                 Quaternion targetLocalRot = (mainTurretTransform.parent != null) 
-                     ? Quaternion.Inverse(mainTurretTransform.parent.rotation) * worldLook 
-                     : worldLook;
+                 // Update Text
+                 if(droneText != null) droneText.text = ammoPC.stackCount.ToString();
+                 if(legacyText != null) legacyText.text = ammoPC.stackCount.ToString();
+
+                 mainTurretTransform.DOPunchScale(Vector3.one * 0.1f, 0.05f, 2, 1);
                  
-                 // Construct Final Local Euler: Keep Initial Y & Z, Use New X (Pitch) with Offset
-                 // Note: Euler X behaves typically as Pitch.
-                 Vector3 finalEuler = new Vector3(targetLocalRot.eulerAngles.x + turretRotationOffset, initialTurretLocalEuler.y, initialTurretLocalEuler.z);
+                 GameObject projectile = Instantiate(cubePrefab, mainTurretTransform.position, Quaternion.identity);
+                 projectile.GetComponent<Renderer>().material.color = color;
+                 projectile.transform.localScale = Vector3.one * 0.15f;
                  
-                 // Tween Local Rotation
-                 mainTurretTransform.DOLocalRotate(finalEuler, 0.15f);
+                 projectile.transform.DOMove(target.transform.position, 0.1f).SetEase(Ease.Linear).OnComplete(() => {
+                     if(target != null)
+                     {
+                        CreateExplosion(target.transform.position, color);
+                        Destroy(target);
+                        CheckWinCondition();
+                     }
+                     if(Camera.main != null) Camera.main.transform.DOShakePosition(0.05f, 0.05f, 5, 90, false, true);
+                     Destroy(projectile);
+                 });
              }
-             yield return new WaitForSeconds(0.15f);
-
-             // 2. Fire Projectile
-             activePixelCubes[color].Remove(target);
-             ammoPC.stackCount--;
-             shotsFiredThisTurn++;
              
-             // Recoil
-             mainTurretTransform.DOPunchScale(Vector3.one * 0.1f, 0.1f, 5, 1);
-
-             GameObject projectile = Instantiate(ammoPrefab != null ? ammoPrefab : cubePrefab, mainTurretTransform.position + mainTurretTransform.forward * 1.5f, Quaternion.identity);
-             projectile.GetComponent<Renderer>().material.color = color;
-             // Set projectile scale to 0.1 as requested
-             projectile.transform.localScale = Vector3.one * 0.1f;
-             
-             projectile.transform.DOMove(target.transform.position, 0.12f).SetEase(Ease.Linear).OnComplete(() => {
-                 if(target != null)
-                 {
-                    CreateExplosion(target.transform.position, color);
-                    Destroy(target);
-                    CheckWinCondition();
-                 }
-                 if(Camera.main != null) Camera.main.transform.DOShakePosition(0.05f, 0.05f, 5, 90, false, true);
-                 Destroy(projectile);
-             });
-
-             yield return new WaitForSeconds(0.1f); // Fire Rate
+             yield return new WaitForSeconds(fireRate);
         }
         
-        // C. Cleanup / Recycle
+        // 5. CLEANUP
+        pathSeq.Kill(); 
         
-        // Cleanup Slot Reservation (Always clear previous slot reservation first)
-        Transform res = slot.Find("Reservation");
-        if(res != null) {
-            res.SetParent(null); // Detach to ensure childCount updates immediately if possible
-            Destroy(res.gameObject);
-        }
-
         if (ammoPC.stackCount > 0)
         {
-            // RECYCLE: Find first empty slot
+            // RECYCLE: Return to Slot
             Transform targetSlot = null;
-            
-            // Find all PlayerCubes to check which slots are occupied
             PlayerCube[] allAmmo = FindObjectsOfType<PlayerCube>();
             
-            // First try to find ANY empty slot (check via currentSlot references, not childCount)
+            // Find empty slot
             for(int i=0; i < manualSlots.Count; i++)
             {
                 Transform checkSlot = manualSlots[i];
                 bool isOccupied = false;
+                foreach(var pc in allAmmo) { if(pc != ammoPC && pc.currentSlot == checkSlot) { isOccupied = true; break; } }
                 
-                // Check if any ammo claims this slot
-                foreach(var pc in allAmmo)
-                {
-                    if(pc != ammoPC && pc.currentSlot == checkSlot) // Ignore self
-                    {
-                        isOccupied = true;
-                        break;
-                    }
-                }
-                
-                if(!isOccupied)
-                {
-                    targetSlot = checkSlot;
-                    break;
-                }
+                if(!isOccupied) { targetSlot = checkSlot; break; }
             }
             
-            // Fallback: Use the origin slot. We just emptied it (by moving ammo to turret and destroying reservation).
-            if(targetSlot == null) targetSlot = slot;
+            if(targetSlot == null) targetSlot = slot; // Fallback to origin
 
             if(targetSlot != null)
             {
-                // Move back to slot (WITHOUT parenting to avoid scale inheritance)
-                ammoObj.transform.SetParent(null); // Keep as root
-                
-                // Update slot reference
+                ammoObj.transform.SetParent(null);
                 ammoPC.currentSlot = targetSlot;
+                ammoPC.isReadyToFire = false; // Must click again
                 
-                // IMPORTANT: Disable Auto-Fire for Recycled Ammo
-                // User must click again to fire.
-                ammoPC.isReadyToFire = false;
-                
-                // Create new Reservation
                 GameObject reservation = new GameObject("Reservation");
                 reservation.transform.SetParent(targetSlot);
                 reservation.transform.localPosition = Vector3.zero;
 
-                // Animate back to slot's WORLD position (with Z offset)
                 Vector3 recycleTargetPos = targetSlot.position + new Vector3(0, 0, -2f);
                 ammoObj.transform.DOJump(recycleTargetPos, 2.0f, 1, 0.5f);
                 ammoObj.transform.DORotate(Vector3.zero, 0.5f);
                 
-                // Restore IDLE scale (Prefab Scale)
+                // Restore Scale
                 Vector3 targetScale = Vector3.one;
                 if(dronePrefab != null) targetScale = dronePrefab.transform.localScale;
-                
                 ammoObj.transform.DOScale(targetScale, 0.5f); 
             }
             else
             {
-                // Should never happen with fallback
-                Debug.LogWarning("Critical: No slots to recycle ammo! Destroying.");
                 ammoObj.transform.DOScale(0, 0.2f).OnComplete(() => Destroy(ammoObj));
             }
         }
         else
         {
             // EMPTY: Destroy
-            // Clear slot reference so it's available for others
             ammoPC.currentSlot = null;
             ammoObj.transform.DOScale(0, 0.2f).OnComplete(() => Destroy(ammoObj));
         }
         
-        // Reset Turret Rotation to Initial (Idle)
-        mainTurretTransform.DOLocalRotate(initialTurretLocalEuler, 0.5f);
+        // Return Turret Home
+        Sequence returnSeq = DOTween.Sequence();
+        returnSeq.Append(mainTurretTransform.DOMove(originalTurretPos, 0.5f).SetEase(Ease.InOutQuad));
+        returnSeq.Join(mainTurretTransform.DORotateQuaternion(originalTurretRot, 0.5f));
+        yield return returnSeq.WaitForCompletion();
 
-        // Wait for jump/rotate animations (0.5f) + buffer to finish
-        yield return new WaitForSeconds(0.6f);
-        isTurretBusy = false; // Next!
+        isTurretBusy = false;
     }
 
 
