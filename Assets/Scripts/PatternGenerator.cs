@@ -538,54 +538,79 @@ public class PatternGenerator : MonoBehaviour
         UpdateDeckStates();
     }
 
-    // New method to rearrange deck buttons
+    // New method to rearrange deck buttons - column-based shift system
+    // When a button is removed, buttons in the same column shift up to fill the gap
     private void RearrangeDeck()
     {
-        if (deckCenterPoint == null || activeDeckButtons.Count == 0) return;
-
-        float buttonSize = 0.6f; 
-        float itemSpacing = buttonSize * 1.5f; 
- 
-        Vector3 rightDir = deckCenterPoint.right;
-        Vector3 upDir = deckCenterPoint.up; 
-        Vector3 forwardDir = deckCenterPoint.forward;
-
-        Vector3 deckOrigin = deckCenterPoint.position 
-                           + (rightDir * deckPositionOffset.x) 
-                           + (upDir * deckPositionOffset.y) 
-                           + (forwardDir * deckPositionOffset.z);
-
-        Vector3 startPos = deckOrigin 
-                         - (rightDir * (maxDeckWidth * 0.5f - buttonSize * 0.5f)) 
-                         + (upDir * (maxDeckHeight * 0.5f - buttonSize * 0.5f));
-
-        int col = 0;
-        int row = 0;
-
-        for (int i = 0; i < activeDeckButtons.Count; i++)
+        Debug.Log($"[REARRANGE DEBUG] RearrangeDeck() called");
+        
+        if (deckCenterPoint == null) 
         {
-            PlayerCube btn = activeDeckButtons[i];
-            if (btn == null) continue;
-
-            float xDist = col * itemSpacing;
-            float yDist = row * itemSpacing;
-
-            if (xDist + buttonSize > maxDeckWidth + 0.1f) 
-            {
-                col = 0;
-                row++;
-                xDist = 0;
-                yDist = row * itemSpacing;
-            }
-
-            Vector3 targetPos = startPos + (rightDir * xDist) - (upDir * yDist);
-            
-            // Move smoothly to new position
-            btn.transform.DOMove(targetPos, 0.3f).SetEase(Ease.OutQuad);
-            
-            col++;
+            Debug.LogWarning("[REARRANGE DEBUG] deckCenterPoint is NULL! Aborting.");
+            return;
+        }
+        
+        if (activeDeckButtons.Count == 0) 
+        {
+            Debug.LogWarning("[REARRANGE DEBUG] activeDeckButtons is EMPTY! Aborting.");
+            return;
         }
 
+        // Remove null entries first
+        int beforeNullRemoval = activeDeckButtons.Count;
+        activeDeckButtons.RemoveAll(btn => btn == null);
+        int afterNullRemoval = activeDeckButtons.Count;
+        Debug.Log($"[REARRANGE DEBUG] Null removal: {beforeNullRemoval} -> {afterNullRemoval} buttons");
+        
+        int count = activeDeckButtons.Count;
+        int cols = 3;
+        float xSpacing = 1.3f;
+        float ySpacing = 1.4f;
+        float startY = 0.5f;
+
+        Debug.Log($"[REARRANGE DEBUG] Grid config: count={count}, cols={cols}, xSpacing={xSpacing}, ySpacing={ySpacing}");
+
+        // Calculate how many rows we need
+        int totalRows = Mathf.CeilToInt((float)count / cols);
+        Debug.Log($"[REARRANGE DEBUG] totalRows={totalRows}");
+        
+        // Assign each button to a new grid position (still row-major index 0,1,2,3,4...)
+        for (int i = 0; i < count; i++)
+        {
+            PlayerCube btn = activeDeckButtons[i];
+            if (btn == null) 
+            {
+                Debug.LogWarning($"[REARRANGE DEBUG] Button at index {i} is NULL! Skipping.");
+                continue;
+            }
+
+            int row = i / cols;
+            int col = i % cols;
+
+            // Calculate items in last row for centering
+            int itemsInLastRow = count % cols;
+            if (itemsInLastRow == 0) itemsInLastRow = cols;
+            
+            // For rows before the last, use full cols
+            int itemsInThisRow = (row < totalRows - 1) ? cols : itemsInLastRow;
+            
+            float rowWidth = (itemsInThisRow - 1) * xSpacing;
+            float rowStartX = -rowWidth / 2f;
+
+            Vector3 targetLocalPos = new Vector3(
+                rowStartX + (col * xSpacing),
+                startY - (row * ySpacing),
+                0
+            ) + deckPositionOffset;
+
+            Vector3 currentLocalPos = btn.transform.localPosition;
+            Debug.Log($"[REARRANGE DEBUG] Button[{i}] '{btn.name}': row={row}, col={col}, currentPos={currentLocalPos}, targetPos={targetLocalPos}");
+
+            // Move smoothly to new LOCAL position
+            btn.transform.DOLocalMove(targetLocalPos, 0.3f).SetEase(Ease.OutQuad);
+        }
+
+        Debug.Log($"[REARRANGE DEBUG] RearrangeDeck() completed. Calling UpdateDeckStates()");
         UpdateDeckStates();
     }
 
@@ -597,16 +622,13 @@ public class PatternGenerator : MonoBehaviour
             PlayerCube btn = activeDeckButtons[i];
             if (btn == null) continue;
 
-            bool isUnlocked = i < visibleDeckCount;
-            
-            // Visual Feedback
+            // All bullets show their real color now
+            // Click restriction is handled in OnPlayerCubeClicked (only first visibleDeckCount are clickable)
             Renderer[] rends = btn.GetComponentsInChildren<Renderer>();
             foreach(var r in rends)
             {
                if(r.name.Contains("Propeller") || r.gameObject.GetComponent<TMP_Text>() != null) continue;
-               
-               // If Unlocked -> Show Real Color. If Locked -> Show Grey/Shadow
-               r.material.color = isUnlocked ? btn.cubeColor : new Color32(100, 100, 100, 255);
+               r.material.color = btn.cubeColor;
             }
         }
     }
@@ -638,7 +660,7 @@ public class PatternGenerator : MonoBehaviour
         {
             // Calculate Total Targets (Ammo)
             int totalTargets = activePixelCubes[color].Count;
-            // Debug.Log($"Clicked Color: {color}, Targets Found: {totalTargets}"); // Debug
+            Debug.Log($"[DECK DEBUG] Clicked Color: {color}, Targets Found: {totalTargets}");
 
             if (totalTargets <= 0) 
             {
@@ -656,13 +678,18 @@ public class PatternGenerator : MonoBehaviour
                 // Re-launching from Slot
                 droneObj = senderCube.gameObject;
                 isNewSpawn = false;
+                Debug.Log($"[DECK DEBUG] Re-launching from slot. isNewSpawn = false");
                 
                 // User clicked an item already in slot -> Force Fire
                 senderCube.isReadyToFire = true;
             }
             else
             {
-                // Spawning from Deck
+                // Spawning from Deck - THIS IS A NEW SPAWN!
+                isNewSpawn = true;
+                Debug.Log($"[DECK DEBUG] Spawning from Deck. isNewSpawn = true");
+                Debug.Log($"[DECK DEBUG] activeDeckButtons.Count BEFORE removal: {activeDeckButtons.Count}");
+                
                 // Find empty slot first - Only needed if spawning new
                 int targetSlotIndex = -1;
                 for (int i = 0; i < manualSlots.Count; i++) 
@@ -685,7 +712,8 @@ public class PatternGenerator : MonoBehaviour
                     } 
                 } // Close for loop
 
-                if (targetSlotIndex == -1) { Debug.Log("Slots Full!"); return; } // Slots full
+                if (targetSlotIndex == -1) { Debug.Log("[DECK DEBUG] Slots Full!"); return; } // Slots full
+                Debug.Log($"[DECK DEBUG] Found empty slot at index: {targetSlotIndex}");
 
                 // Spawn Drone Logic (Moved outside the loop)
             // The `isNewSpawn` flag is determined here based on whether it's from the deck or a slot.
@@ -695,6 +723,7 @@ public class PatternGenerator : MonoBehaviour
             if (isNewSpawn && dronePrefab != null)
             {
                  droneObj = Instantiate(dronePrefab, senderCube.transform.position, Quaternion.identity);
+                 Debug.Log($"[DECK DEBUG] Instantiated new drone from dronePrefab");
             }
             else if (!isNewSpawn)
             {
@@ -705,18 +734,39 @@ public class PatternGenerator : MonoBehaviour
             {
                  // Fallback
                  droneObj = Instantiate(cubePrefab, senderCube.transform.position, Quaternion.identity);
+                 Debug.Log($"[DECK DEBUG] Instantiated new drone from cubePrefab (fallback)");
             }
 
             if (isNewSpawn)
             {
+                Debug.Log($"[DECK DEBUG] isNewSpawn is TRUE - will remove from deck and rearrange");
+                
                 // USER REQUEST: Destroy the deck button immediately so it cannot be clicked again
-                if (activeDeckButtons.Contains(senderCube)) activeDeckButtons.Remove(senderCube);
+                int indexBeforeRemove = activeDeckButtons.IndexOf(senderCube);
+                Debug.Log($"[DECK DEBUG] senderCube index in activeDeckButtons: {indexBeforeRemove}");
+                
+                if (activeDeckButtons.Contains(senderCube)) 
+                {
+                    activeDeckButtons.Remove(senderCube);
+                    Debug.Log($"[DECK DEBUG] Removed senderCube. activeDeckButtons.Count AFTER removal: {activeDeckButtons.Count}");
+                }
+                else
+                {
+                    Debug.LogWarning($"[DECK DEBUG] WARNING: senderCube NOT FOUND in activeDeckButtons!");
+                }
+                
                 Destroy(senderCube.gameObject);
                 
                 // Rearrange remaining buttons
+                Debug.Log($"[DECK DEBUG] Calling RearrangeDeck()...");
                 RearrangeDeck();
             }
+            else
+            {
+                Debug.Log($"[DECK DEBUG] isNewSpawn is FALSE - NOT calling RearrangeDeck");
+            }
             } // End of Else (Manual/Deck check)
+
 
             // Setup Drone
             droneObj.name = "Drone_" + color;
