@@ -28,8 +28,9 @@ public class PatternGenerator : MonoBehaviour
     public float heightOffset = 0.1f; // Restored variable
     
     // Limits
-    public float maxPatternWidth = 10f;
-    public float maxPatternHeight = 10f;
+    public float maxPatternWidth = 7f;
+    public float maxPatternHeight = 8f;
+    [Range(0.5f, 1f)] public float patternPadding = 0.85f; // Padding inside the frame
 
     [Header("Deck Settings")]
     public Transform deckCenterPoint;
@@ -238,13 +239,42 @@ public class PatternGenerator : MonoBehaviour
         int width = texture.width;
         int height = texture.height;
         
-        // Adjust sizing - Scale pattern to fill available area
-        // Use the larger dimension to calculate spacing so pattern fits within bounds
-        float widthSpacing = maxPatternWidth / (float)width;
-        float heightSpacing = maxPatternHeight / (float)height;
+        // Read all pixels from texture - with fallback for non-readable textures
+        Color[] pixels = GetTexturePixels(texture);
+        
+        // FIRST PASS: Find the actual bounding box of colored pixels
+        int minX = width, maxX = 0, minY = height, maxY = 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                Color pixelColor = pixels[y * width + x];
+                
+                // Skip transparent or nearly white pixels
+                if (pixelColor.a < 0.1f) continue;
+                if (pixelColor.r > 0.95f && pixelColor.g > 0.95f && pixelColor.b > 0.95f) continue;
+                
+                // This is a colored pixel - update bounds
+                minX = Mathf.Min(minX, x);
+                maxX = Mathf.Max(maxX, x);
+                minY = Mathf.Min(minY, y);
+                maxY = Mathf.Max(maxY, y);
+            }
+        }
+        
+        // Calculate actual content dimensions
+        int contentWidth = maxX - minX + 1;
+        int contentHeight = maxY - minY + 1;
+        
+        Debug.Log($"[PATTERN] Texture: {width}x{height}, Content bounds: ({minX},{minY}) to ({maxX},{maxY}), Content size: {contentWidth}x{contentHeight}");
+        
+        // Adjust sizing - Scale pattern to fill available area based on CONTENT size
+        float widthSpacing = maxPatternWidth / (float)contentWidth;
+        float heightSpacing = maxPatternHeight / (float)contentHeight;
         
         // Use the smaller of the two to ensure pattern fits in both dimensions
-        float calculatedSpacing = Mathf.Min(widthSpacing, heightSpacing);
+        // Apply padding multiplier to keep pattern inside the frame
+        float calculatedSpacing = Mathf.Min(widthSpacing, heightSpacing) * patternPadding;
 
         Vector3 cubeScale = Vector3.one * calculatedSpacing * 0.90f; 
  
@@ -253,8 +283,9 @@ public class PatternGenerator : MonoBehaviour
         Vector3 upDir = (centerPoint != null) ? centerPoint.up : Vector3.up;     
         Vector3 forwardDir = (centerPoint != null) ? centerPoint.forward : Vector3.forward; 
 
-        float widthOffset = (width - 1) * calculatedSpacing / 2f;
-        float heightOffsetMap = (height - 1) * calculatedSpacing / 2f;
+        // Calculate offset based on CONTENT center, not texture center
+        float contentCenterX = (minX + maxX) / 2f;
+        float contentCenterY = (minY + maxY) / 2f;
 
         List<Color> colorDiscoveryOrder = new List<Color>();
         HashSet<Color> discoveredColors = new HashSet<Color>();
@@ -262,9 +293,7 @@ public class PatternGenerator : MonoBehaviour
         // Dictionary to map similar colors to a single representative color
         Dictionary<Color, Color> colorMapping = new Dictionary<Color, Color>();
 
-        // Read all pixels from texture - with fallback for non-readable textures
-        Color[] pixels = GetTexturePixels(texture);
-
+        // SECOND PASS: Generate cubes (now centered correctly)
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
@@ -305,8 +334,9 @@ public class PatternGenerator : MonoBehaviour
                     mappedColor = colorMapping[normalizedColor];
                 }
 
-                float xPos = (x * calculatedSpacing) - widthOffset;
-                float yPos = (y * calculatedSpacing) - heightOffsetMap;
+                // Position relative to CONTENT center (not texture center)
+                float xPos = (x - contentCenterX) * calculatedSpacing;
+                float yPos = (y - contentCenterY) * calculatedSpacing;
 
                 Vector3 basePos = centerPos + (rightDir * xPos) + (upDir * yPos) + (forwardDir * heightOffset);
                 Vector3 nudge = (rightDir * positionOffset.x) + (upDir * positionOffset.y) + (forwardDir * positionOffset.z);
