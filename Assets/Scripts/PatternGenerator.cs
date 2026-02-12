@@ -56,12 +56,37 @@ public class PatternGenerator : MonoBehaviour
 
     public bool autoSizeFromMesh = true;
 
+    public static PatternGenerator Instance { get; private set; }
+
     // Runtime state
-    private Dictionary<Color, List<GameObject>> activePixelCubes = new Dictionary<Color, List<GameObject>>();
-    private List<PlayerCube> activeDeckButtons = new List<PlayerCube>(); 
+    public Dictionary<Color, List<GameObject>> activePixelCubes = new Dictionary<Color, List<GameObject>>();
+
+    public List<PlayerCube> allActiveCubes = new List<PlayerCube>();
+
     private bool isGameActive = false;
-    private bool isTurretBusy = false; // TURRET STATE
-    private Vector3 initialTurretLocalEuler; // Stores scene start LOCAL rotation
+    private bool isTurretBusy = false; 
+    private Vector3 initialTurretLocalEuler; 
+    
+    private DeckManager deckManager;
+
+    private void Awake()
+    {
+        if (Instance == null) Instance = this;
+        else Destroy(gameObject);
+        
+        deckManager = GetComponent<DeckManager>();
+        if (deckManager == null) deckManager = gameObject.AddComponent<DeckManager>();
+    }
+
+    public void RegisterCube(PlayerCube cube)
+    {
+        if (!allActiveCubes.Contains(cube)) allActiveCubes.Add(cube);
+    }
+
+    public void UnregisterCube(PlayerCube cube)
+    {
+        if (allActiveCubes.Contains(cube)) allActiveCubes.Remove(cube);
+    }
 
     // Level System
     private int currentLevelIndex = 0;
@@ -77,11 +102,7 @@ public class PatternGenerator : MonoBehaviour
     private void ProcessTurretQueue()
     {
         // Scan slots for Ready Ammo
-        // Since drones are no longer children of slots (to avoid scale inheritance),
-        // we look for PlayerCubes via their currentSlot reference
-        
-        // Find all active PlayerCubes with a currentSlot set
-        PlayerCube[] allAmmo = FindObjectsOfType<PlayerCube>();
+        // Optimized: Uses cached list instead of FindObjectsOfType
         
         for (int i = 0; i < manualSlots.Count; i++)
         {
@@ -89,9 +110,9 @@ public class PatternGenerator : MonoBehaviour
              
              // Find ammo that belongs to this slot
              PlayerCube ammo = null;
-             foreach(var pc in allAmmo)
+             foreach(var pc in allActiveCubes)
              {
-                 if(pc.currentSlot == slot)
+                 if(pc != null && pc.currentSlot == slot)
                  {
                      ammo = pc;
                      break;
@@ -112,12 +133,12 @@ public class PatternGenerator : MonoBehaviour
     {
         if(Camera.main == null) return;
         
-        // Robust Billboarding: Find all PlayerCubes (Drones/Buttons) and align their text
-        var allCubes = FindObjectsOfType<PlayerCube>();
+        // Robust Billboarding: Use cached list
         Quaternion camRot = Camera.main.transform.rotation;
         
-        foreach(var pc in allCubes)
+        for(int i = 0; i < allActiveCubes.Count; i++)
         {
+            PlayerCube pc = allActiveCubes[i];
             if(pc == null || !pc.gameObject.activeInHierarchy) continue;
 
             // Handle TMP
@@ -213,11 +234,7 @@ public class PatternGenerator : MonoBehaviour
         activePixelCubes.Clear();
         
         // Cleanup Deck Visuals too (Important for new level colors)
-        if (deckCenterPoint != null)
-        {
-             foreach(Transform child in deckCenterPoint) Destroy(child.gameObject);
-        }
-        activeDeckButtons.Clear();
+        // Handled by DeckManager.GeneratePlayerDeck later
         
         // Initialize occupied array based on manual slots count
         if (manualSlots != null) 
@@ -366,7 +383,7 @@ public class PatternGenerator : MonoBehaviour
         Debug.Log($"Pattern generated: {width}x{height} pixels, {colorDiscoveryOrder.Count} unique colors, {activePixelCubes.Values.Sum(l => l.Count)} total cubes");
         
         // --- Generate Stacks Logic ---
-        List<StackData> deckStacks = new List<StackData>();
+        List<DeckManager.StackData> deckStacks = new List<DeckManager.StackData>();
         foreach (Color col in colorDiscoveryOrder)
         {
             // PROPORTIONAL AMMO: 20-20-10-REMAINDER Logic
@@ -375,25 +392,31 @@ public class PatternGenerator : MonoBehaviour
             // 1. Fill 20s
             while(totalAmmo >= 20)
             {
-                deckStacks.Add(new StackData { color = col, count = 20 });
+                deckStacks.Add(new DeckManager.StackData { color = col, count = 20 });
                 totalAmmo -= 20;
             }
 
             // 2. If remainder > 10, make a 10 stack
             if(totalAmmo > 10)
             {
-                deckStacks.Add(new StackData { color = col, count = 10 });
+                deckStacks.Add(new DeckManager.StackData { color = col, count = 10 });
                 totalAmmo -= 10;
             }
 
             // 3. Add whatever is left
             if(totalAmmo > 0)
             {
-                deckStacks.Add(new StackData { color = col, count = totalAmmo });
+                deckStacks.Add(new DeckManager.StackData { color = col, count = totalAmmo });
             }
         }
         
-        GeneratePlayerDeck(deckStacks, cubeScale);
+        // Pass to DeckManager
+        // Ensure DeckManager has references
+        deckManager.deckCenterPoint = this.deckCenterPoint;
+        deckManager.deckPositionOffset = this.deckPositionOffset;
+        deckManager.visibleDeckCount = this.visibleDeckCount;
+
+        deckManager.GeneratePlayerDeck(deckStacks, dronePrefab != null ? dronePrefab : cubePrefab, this);
     }
     
     /// <summary>
@@ -463,205 +486,7 @@ public class PatternGenerator : MonoBehaviour
         return pixels;
     }
 
-    private struct StackData
-    {
-        public Color color;
-        public int count;
-    }
 
-    void GeneratePlayerDeck(List<StackData> stacks, Vector3 baseScale)
-    {
-        if (deckCenterPoint == null) return;
-
-        PlayerCube[] oldButtons = deckCenterPoint.GetComponentsInChildren<PlayerCube>();
-        foreach (var btn in oldButtons) Destroy(btn.gameObject);
-        activeDeckButtons.Clear(); 
-
-        int count = stacks.Count;
-        if (count == 0) return;
-
-        // Deck Sizing Logic - Simplified Grid (TIGHT FILTER)
-        // Goal: Fit inside the "Red Box" area below slots
-        int cols = 3; 
-        float xSpacing = 1.3f; // Reduced from 2.0f to fit screen width
-        float ySpacing = 1.4f; // Reduced vertical spacing
-        
-        // Calculate total width of one row to center it
-        // If col count is less than max cols, center based on actual count? No, keep it stable.
-        float totalRowWidth = (Mathf.Min(count, cols) - 1) * xSpacing;
-        float startX = -totalRowWidth / 2f; 
-
-        // Vertical Start Offset (Adjust this to move the WHOLE group Up/Down)
-        // 0 is the pivot of DeckCenter. If DeckCenter is too low, we might need positive Y.
-        // Looking at images, they are too low. Let's add a positive Y offset base.
-        float startY = 0.5f; 
-
-        for (int i = 0; i < count; i++)
-        {
-            StackData stack = stacks[i];
-
-            int row = i / cols;
-            int col = i % cols;
-
-            // Alignment: Start from Left (+ col * spacing)
-            // If it's the 2nd row, and it only has 1 item, should it be centered? 
-            // For now, let's keep left-aligned within the centered block for consistency.
-            
-            // Actually, let's force center align for the last row if it's incomplete?
-            // That looks nicer.
-            int itemsInThisRow = cols;
-            // If it's the last row
-            if (row == (count - 1) / cols) 
-            {
-                itemsInThisRow = count % cols;
-                if (itemsInThisRow == 0) itemsInThisRow = cols;
-            }
-            
-            float rowWidth = (itemsInThisRow - 1) * xSpacing;
-            float rowStartX = -rowWidth / 2f; // Center this specific row
-
-            Vector3 localPos = new Vector3(
-                rowStartX + (col * xSpacing), 
-                startY - (row * ySpacing), 
-                0
-            );
-
-            // Use Instantiate with parent directly to keep hierarchy clean
-            GameObject playerDeckCube = Instantiate(dronePrefab != null ? dronePrefab : cubePrefab, deckCenterPoint);
-            playerDeckCube.transform.localPosition = localPos + deckPositionOffset; 
-            playerDeckCube.transform.localRotation = Quaternion.Euler(-90, 0, 0); // Face camera
-            
-            // Adjusted Scale removed to respect Prefab scale
-            // playerDeckCube.transform.localScale = Vector3.one * 1.8f; 
-            
-            playerDeckCube.name = $"PlayerBtn_{i}_{stack.count}";
-
-            // Safely get or add PlayerCube
-            PlayerCube pc = playerDeckCube.GetComponent<PlayerCube>();
-            if (pc == null) pc = playerDeckCube.AddComponent<PlayerCube>();
-            
-            pc.Initialize(stack.color, this);
-            pc.stackCount = stack.count; 
-            
-            // Update Text 
-            Text stackText = playerDeckCube.GetComponentInChildren<Text>();
-            if (stackText != null) stackText.text = stack.count.ToString(); 
-            
-            TMP_Text stackTextTMP = playerDeckCube.GetComponentInChildren<TMP_Text>();
-            if (stackTextTMP != null) stackTextTMP.text = stack.count.ToString(); 
-            
-            // Colorizing Logic
-            if (dronePrefab != null)
-            {
-                 Renderer[] rends = playerDeckCube.GetComponentsInChildren<Renderer>();
-                 foreach(var r in rends)
-                 {
-                    if(r.name.Contains("Propeller") || r.gameObject.GetComponent<TMP_Text>() != null) continue;
-                    r.material.color = stack.color;
-                 }
-            } 
-            
-            activeDeckButtons.Add(pc); 
-        }
-        
-        // Initial Visual Update for the Queue System
-        UpdateDeckStates();
-    }
-
-    // New method to rearrange deck buttons - column-based shift system
-    // When a button is removed, buttons in the same column shift up to fill the gap
-    private void RearrangeDeck()
-    {
-        Debug.Log($"[REARRANGE DEBUG] RearrangeDeck() called");
-        
-        if (deckCenterPoint == null) 
-        {
-            Debug.LogWarning("[REARRANGE DEBUG] deckCenterPoint is NULL! Aborting.");
-            return;
-        }
-        
-        if (activeDeckButtons.Count == 0) 
-        {
-            Debug.LogWarning("[REARRANGE DEBUG] activeDeckButtons is EMPTY! Aborting.");
-            return;
-        }
-
-        // Remove null entries first
-        int beforeNullRemoval = activeDeckButtons.Count;
-        activeDeckButtons.RemoveAll(btn => btn == null);
-        int afterNullRemoval = activeDeckButtons.Count;
-        Debug.Log($"[REARRANGE DEBUG] Null removal: {beforeNullRemoval} -> {afterNullRemoval} buttons");
-        
-        int count = activeDeckButtons.Count;
-        int cols = 3;
-        float xSpacing = 1.3f;
-        float ySpacing = 1.4f;
-        float startY = 0.5f;
-
-        Debug.Log($"[REARRANGE DEBUG] Grid config: count={count}, cols={cols}, xSpacing={xSpacing}, ySpacing={ySpacing}");
-
-        // Calculate how many rows we need
-        int totalRows = Mathf.CeilToInt((float)count / cols);
-        Debug.Log($"[REARRANGE DEBUG] totalRows={totalRows}");
-        
-        // Assign each button to a new grid position (still row-major index 0,1,2,3,4...)
-        for (int i = 0; i < count; i++)
-        {
-            PlayerCube btn = activeDeckButtons[i];
-            if (btn == null) 
-            {
-                Debug.LogWarning($"[REARRANGE DEBUG] Button at index {i} is NULL! Skipping.");
-                continue;
-            }
-
-            int row = i / cols;
-            int col = i % cols;
-
-            // Calculate items in last row for centering
-            int itemsInLastRow = count % cols;
-            if (itemsInLastRow == 0) itemsInLastRow = cols;
-            
-            // For rows before the last, use full cols
-            int itemsInThisRow = (row < totalRows - 1) ? cols : itemsInLastRow;
-            
-            float rowWidth = (itemsInThisRow - 1) * xSpacing;
-            float rowStartX = -rowWidth / 2f;
-
-            Vector3 targetLocalPos = new Vector3(
-                rowStartX + (col * xSpacing),
-                startY - (row * ySpacing),
-                0
-            ) + deckPositionOffset;
-
-            Vector3 currentLocalPos = btn.transform.localPosition;
-            Debug.Log($"[REARRANGE DEBUG] Button[{i}] '{btn.name}': row={row}, col={col}, currentPos={currentLocalPos}, targetPos={targetLocalPos}");
-
-            // Move smoothly to new LOCAL position
-            btn.transform.DOLocalMove(targetLocalPos, 0.3f).SetEase(Ease.OutQuad);
-        }
-
-        Debug.Log($"[REARRANGE DEBUG] RearrangeDeck() completed. Calling UpdateDeckStates()");
-        UpdateDeckStates();
-    }
-
-    // Controls the "Deck Queue" Visuals
-    private void UpdateDeckStates()
-    {
-        for (int i = 0; i < activeDeckButtons.Count; i++)
-        {
-            PlayerCube btn = activeDeckButtons[i];
-            if (btn == null) continue;
-
-            // All bullets show their real color now
-            // Click restriction is handled in OnPlayerCubeClicked (only first visibleDeckCount are clickable)
-            Renderer[] rends = btn.GetComponentsInChildren<Renderer>();
-            foreach(var r in rends)
-            {
-               if(r.name.Contains("Propeller") || r.gameObject.GetComponent<TMP_Text>() != null) continue;
-               r.material.color = btn.cubeColor;
-            }
-        }
-    }
 
     // Called by PlayerCube when clicked
     public void OnPlayerCubeClicked(PlayerCube senderCube)
@@ -670,11 +495,10 @@ public class PatternGenerator : MonoBehaviour
         
         // --- DECK QUEUE CHECK ---
         // If this cube is in the deck (not a slot re-launch)
-        if (activeDeckButtons.Contains(senderCube))
+        if (deckManager.IsInDeck(senderCube))
         {
-            int index = activeDeckButtons.IndexOf(senderCube);
             // If the item is beyond the visible/allowed count, reject the click
-            if (index >= visibleDeckCount)
+            if (!deckManager.IsClickable(senderCube))
             {
                 // Feedback: Shake to show it's locked
                 senderCube.transform.DOShakeRotation(0.3f, 15f);
@@ -718,7 +542,6 @@ public class PatternGenerator : MonoBehaviour
                 // Spawning from Deck - THIS IS A NEW SPAWN!
                 isNewSpawn = true;
                 Debug.Log($"[DECK DEBUG] Spawning from Deck. isNewSpawn = true");
-                Debug.Log($"[DECK DEBUG] activeDeckButtons.Count BEFORE removal: {activeDeckButtons.Count}");
                 
                 // Find empty slot first - Only needed if spawning new
                 int targetSlotIndex = -1;
@@ -771,25 +594,10 @@ public class PatternGenerator : MonoBehaviour
             {
                 Debug.Log($"[DECK DEBUG] isNewSpawn is TRUE - will remove from deck and rearrange");
                 
-                // USER REQUEST: Destroy the deck button immediately so it cannot be clicked again
-                int indexBeforeRemove = activeDeckButtons.IndexOf(senderCube);
-                Debug.Log($"[DECK DEBUG] senderCube index in activeDeckButtons: {indexBeforeRemove}");
-                
-                if (activeDeckButtons.Contains(senderCube)) 
-                {
-                    activeDeckButtons.Remove(senderCube);
-                    Debug.Log($"[DECK DEBUG] Removed senderCube. activeDeckButtons.Count AFTER removal: {activeDeckButtons.Count}");
-                }
-                else
-                {
-                    Debug.LogWarning($"[DECK DEBUG] WARNING: senderCube NOT FOUND in activeDeckButtons!");
-                }
+                // DELEGATE TO DECK MANAGER
+                deckManager.RemoveButton(senderCube);
                 
                 Destroy(senderCube.gameObject);
-                
-                // Rearrange remaining buttons
-                Debug.Log($"[DECK DEBUG] Calling RearrangeDeck()...");
-                RearrangeDeck();
             }
             else
             {
@@ -1310,7 +1118,10 @@ public class PatternGenerator : MonoBehaviour
         // NO AUTO SLOT GENERATION
 
         // --- Generate Stacks Logic ---
-        List<StackData> deckStacks = new List<StackData>();
+        // Legacy testing method - update to use DeckManager types if needed, or remove
+        List<DeckManager.StackData> deckStacks = new List<DeckManager.StackData>();
+        
+        // ... (rest of logic if needed)
         foreach (Color col in colorDiscoveryOrder)
         {
             // PROPORTIONAL AMMO: Split into stacks of max 20
@@ -1320,7 +1131,8 @@ public class PatternGenerator : MonoBehaviour
             while (totalAmmo > 0)
             {
                 int currentStackSize = Mathf.Min(totalAmmo, maxPerStack);
-                deckStacks.Add(new StackData { color = col, count = currentStackSize });
+                // NEW: Use DeckManager type
+                deckStacks.Add(new DeckManager.StackData { color = col, count = currentStackSize });
                 totalAmmo -= currentStackSize;
             }
         }
@@ -1329,13 +1141,16 @@ public class PatternGenerator : MonoBehaviour
         Debug.Log("Game Started! Pattern: Manual Heart");
     }
 
+    /* LEGACY - REMOVING TO FIX COMPILE ERRORS
     private struct StackData_OLD
     {
         public Color color;
         public int count;
     }
+    */
 
-    void GeneratePlayerDeck_OLD(List<StackData_OLD> stacks, Vector3 baseScale)
+    // void GeneratePlayerDeck_OLD(List<StackData_OLD> stacks, Vector3 baseScale)
+    /* 
     {
         if (deckCenterPoint == null) return;
 
@@ -1345,69 +1160,9 @@ public class PatternGenerator : MonoBehaviour
         int count = stacks.Count;
         if (count == 0) return;
 
-        // Deck Sizing Logic - Fixed Size as requested
-        float buttonSize = 0.6f; 
-        
-        float itemSpacing = buttonSize * 1.5f; // More spacing since we have a fixed small size
- 
-        Vector3 rightDir = deckCenterPoint.right;
-        Vector3 upDir = deckCenterPoint.up; 
-        Vector3 forwardDir = deckCenterPoint.forward;
-
-        Vector3 deckOrigin = deckCenterPoint.position 
-                           + (rightDir * deckPositionOffset.x) 
-                           + (upDir * deckPositionOffset.y) 
-                           + (forwardDir * deckPositionOffset.z);
-
-        // Top Left Logic
-        Vector3 startPos = deckOrigin 
-                         - (rightDir * (maxDeckWidth * 0.5f - buttonSize * 0.5f)) 
-                         + (upDir * (maxDeckHeight * 0.5f - buttonSize * 0.5f));
-
-        int col = 0;
-        int row = 0;
-
-        for (int i = 0; i < count; i++)
-        {
-            StackData_OLD stack = stacks[i];
-
-            float xDist = col * itemSpacing;
-            float yDist = row * itemSpacing;
-
-            if (xDist + buttonSize > maxDeckWidth + 0.1f) 
-            {
-                col = 0;
-                row++;
-                xDist = 0;
-                yDist = row * itemSpacing;
-            }
-
-            Vector3 spawnPos = startPos + (rightDir * xDist) - (upDir * yDist);
-            
-            GameObject playerDeckCube = Instantiate(cubePrefab, spawnPos, Quaternion.identity, deckCenterPoint);
-            playerDeckCube.name = $"PlayerBtn_{i}_{stack.count}";
-
-            // FIXED: Ensure World Scale is always a perfect cube, ignoring parent's distortion
-            Vector3 targetWorldScale = new Vector3(buttonSize, buttonSize, buttonSize);
-            Vector3 parentScale = deckCenterPoint.lossyScale;
-            
-            // Calculate necessary local scale to achieve target world scale
-            Vector3 finalLocalScale = new Vector3(
-                targetWorldScale.x / parentScale.x,
-                targetWorldScale.y / parentScale.y,
-                targetWorldScale.z / parentScale.z
-            );
-
-            playerDeckCube.transform.localScale = finalLocalScale;
-            playerDeckCube.transform.localRotation = Quaternion.identity; 
-
-            PlayerCube pc = playerDeckCube.AddComponent<PlayerCube>();
-            pc.Initialize(stack.color, this);
-            pc.stackCount = stack.count; 
-            
-            col++;
-        }
+        // ... (Legacy code removed)
     }
+    */
 
 
 
